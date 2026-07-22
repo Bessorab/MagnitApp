@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: magnitapp
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: HEAD_ADMIN_USERNAME
+        sync: false
+      - key: HEAD_ADMIN_PASSWORD
+        sync: false

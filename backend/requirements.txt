@@ -1,0 +1,8 @@
+Flask==3.1.3
+PyJWT==2.7.0
+Pillow
+imagehash
+pyzbar
+openpyxl
+pywebpush
+gunicorn
