@@ -106,6 +106,12 @@ async function doLogin(username, password) {
   ME = data;
   showMainApp();
   setupPushNotifications(false);
+  const pendingShare = sessionStorage.getItem("magnit_pending_share");
+  if (pendingShare && ME.role === "seller") {
+    sessionStorage.removeItem("magnit_pending_share");
+    const shared = JSON.parse(pendingShare);
+    openQuickPartModal(shared.link, shared.note);
+  }
 }
 
 function showLoginPendingMessage() {
@@ -1170,7 +1176,7 @@ const PARTS_SITES = [
   { name: "GSM Server", url: "https://gsmserver.com.ua/uk/" },
 ];
 
-window.openQuickPartModal = async () => {
+window.openQuickPartModal = async (prefillLink, prefillNote) => {
   let repairOptions = `<option value="">— не вказано —</option>`;
   try {
     const pending = await api("/repairs/pending");
@@ -1184,8 +1190,8 @@ window.openQuickPartModal = async () => {
     <div class="modal-sheet">
       <h3>🔩 Надіслати посилання на запчастину</h3>
       <p style="color:#93a3b8;font-size:13px;">Вставте скопійоване посилання на потрібну деталь.</p>
-      <label>Посилання</label><input id="quickPartLink" placeholder="https://...">
-      <label>Коментар (необов'язково)</label><input id="quickPartNote" placeholder="Наприклад: екран для iPhone 12">
+      <label>Посилання</label><input id="quickPartLink" placeholder="https://..." value="${(prefillLink || "").replace(/"/g, "&quot;")}">
+      <label>Коментар (необов'язково)</label><input id="quickPartNote" placeholder="Наприклад: екран для iPhone 12" value="${(prefillNote || "").replace(/"/g, "&quot;")}">
       <label>Для якої квитанції в ремонті (необов'язково)</label>
       <select id="quickPartRepair">${repairOptions}</select>
       <div class="grid2">
@@ -1218,9 +1224,9 @@ function closeQuickPartModal() {
 async function renderPartsView() {
   const view = document.getElementById("view");
   view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
-    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Сайт відкриється в окремому вікні. Скільки б сторінок ви там не переглянули - щоб миттєво повернутись у застосунок, використовуйте кнопку "Огляд" / "Останні застосунки" на телефоні (не кнопку "Назад") і перемкніться на MagnitApp.</p>` +
+    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Знайшли потрібну деталь на сайті? Натисніть «Поділитися» в браузері й оберіть MagnitApp — посилання одразу підставиться в форму, без потреби повертатись вручну.</p>` +
     PARTS_SITES.map(s =>
-      `<a href="${s.url}" target="_blank" rel="noopener" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+      `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
     ).join("") + `
     <button class="btn" style="margin-top:14px;" onclick="openQuickPartModal()">🔩 Надіслати посилання на запчастину адміну</button>
     <h3 style="margin-top:16px;">📜 Мої надіслані запчастини</h3>
@@ -1334,10 +1340,31 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   }
 });
 
+function getSharedPartFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const url = params.get("shared_url") || "";
+  const text = params.get("shared_text") || "";
+  // Деякі застосунки кладуть посилання в text, а не url - шукаємо http(s):// там теж.
+  const urlFromText = (text.match(/https?:\/\/\S+/) || [])[0];
+  const link = url || urlFromText || "";
+  const note = (url ? text : text.replace(link, "")).trim();
+  if (!link) return null;
+  history.replaceState(null, "", location.pathname); // приберемо параметри з адресного рядка
+  return { link, note };
+}
+
 (async function init() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/service-worker.js").catch(() => {});
   }
+  const shared = getSharedPartFromUrl();
   const restored = await tryRestoreSession();
-  if (restored) { showMainApp(); setupPushNotifications(true); } else showLoginScreen();
+  if (restored) {
+    showMainApp();
+    setupPushNotifications(true);
+    if (shared && ME.role === "seller") openQuickPartModal(shared.link, shared.note);
+  } else {
+    if (shared) sessionStorage.setItem("magnit_pending_share", JSON.stringify(shared));
+    showLoginScreen();
+  }
 })();
