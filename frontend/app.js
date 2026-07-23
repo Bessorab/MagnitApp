@@ -1005,12 +1005,13 @@ async function loadRequestsList() {
   const listEl = document.getElementById("requestsList");
   try {
     const canSeeQty = ME.role === "admin" || ME.role === "head_admin";
-    const isFullAdmin = ME.role === "admin" || ME.role === "head_admin";
+    const canSeeFullHistory = ME.role === "admin" || ME.role === "head_admin" || ME.role === "parts_admin";
+    const canEditDelete = ME.role === "admin" || ME.role === "head_admin";
     const isHeadAdmin = ME.role === "head_admin";
     const [qtyRows, repairRows, partRows, loginRows] = await Promise.all([
       canSeeQty ? api("/qty-requests/pending") : Promise.resolve([]),
       api("/repair-delete-requests/pending"),
-      isFullAdmin ? api("/part-requests/all") : api("/part-requests/pending"),
+      canSeeFullHistory ? api("/part-requests/all") : api("/part-requests/pending"),
       isHeadAdmin ? api("/login-requests/pending") : Promise.resolve([]),
     ]);
     let html = "";
@@ -1036,22 +1037,28 @@ async function loadRequestsList() {
         </div>`).join("");
     }
     if (partRows.length) {
-      const title = isFullAdmin ? "🔩 Запчастини (уся історія, всі точки)" : "🔩 Запчастини на замовлення";
+      const title = canSeeFullHistory ? "🔩 Запчастини (уся історія, всі точки)" : "🔩 Запчастини на замовлення";
       html += `<h3>${title}</h3>` + partRows.map(r => {
-        const status = isFullAdmin
+        const status = canSeeFullHistory
           ? (r.status === "done" ? `<span class="badge done">оброблено</span>` : `<span class="badge pending">очікує</span>`)
           : "";
         const repairLine = r.receipt_number ? `<div class="meta">Для квитанції №${r.receipt_number}</div>` : "";
-        const actions = isFullAdmin
-          ? `<div class="grid2" style="margin-top:8px;">
+        const whenLine = canSeeFullHistory ? `<div class="meta">${r.location} | ${r.requested_at}</div>` : "";
+        let actions = "";
+        if (r.status !== "done") {
+          actions += `<button class="btn" style="margin-top:8px;" onclick="markPartRequestDone(${r.id})">✅ Замовлено / оброблено</button>`;
+        }
+        if (canEditDelete) {
+          actions += `<div class="grid2" style="margin-top:8px;">
                <button class="btn small" onclick="editPartRequest(${r.id}, '${(r.link || "").replace(/'/g, "&#39;")}', '${(r.note || "").replace(/'/g, "&#39;")}', ${r.repair_id || "null"})">✏️ Редагувати</button>
                <button class="btn small danger" onclick="deletePartRequest(${r.id})">🗑️ Видалити</button>
-             </div>`
-          : `<button class="btn" style="margin-top:8px;" onclick="markPartRequestDone(${r.id})">✅ Замовлено / оброблено</button>`;
+             </div>`;
+        }
         return `<div class="card">
           <div class="name">${r.location}${r.note ? " — " + r.note : ""} ${status}</div>
           <div class="meta"><a href="${r.link}" style="color:#5b9bd5;">${r.link}</a></div>
           ${repairLine}
+          ${whenLine}
           ${actions}
         </div>`;
       }).join("");

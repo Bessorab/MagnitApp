@@ -881,10 +881,11 @@ def mark_part_request_done_route(request_id):
 
 @app.route("/api/part-requests/all", methods=["GET"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def all_part_requests_route():
-    """Уся історія (будь-який статус) на всіх точках - лише повний/головний
-    адмін, для контролю запчастин у ремонті та їх повернення."""
+    """Уся історія (будь-який статус) на всіх точках - доступно й адміну
+    запчастин (лише перегляд), і повному/головному адміну (перегляд +
+    редагування/видалення - обмежується окремо на рівні PATCH/DELETE)."""
     db.cleanup_old_part_requests()
     location = request.args.get("location")
     rows = db.get_all_part_requests(location)
