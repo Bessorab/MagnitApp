@@ -1218,9 +1218,9 @@ function closeQuickPartModal() {
 async function renderPartsView() {
   const view = document.getElementById("view");
   view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
-    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Після переходу на сайт натисніть кнопку «Назад» на телефоні, щоб швидко повернутись у застосунок - тоді натисніть помаранчеву кнопку 🔩 внизу справа, щоб надіслати посилання адміну з будь-якого екрана.</p>` +
+    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Сайт відкриється в окремому вікні. Скільки б сторінок ви там не переглянули - щоб миттєво повернутись у застосунок, використовуйте кнопку "Огляд" / "Останні застосунки" на телефоні (не кнопку "Назад") і перемкніться на MagnitApp.</p>` +
     PARTS_SITES.map(s =>
-      `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+      `<a href="${s.url}" target="_blank" rel="noopener" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
     ).join("") + `
     <button class="btn" style="margin-top:14px;" onclick="openQuickPartModal()">🔩 Надіслати посилання на запчастину адміну</button>
     <h3 style="margin-top:16px;">📜 Мої надіслані запчастини</h3>
