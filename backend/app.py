@@ -27,7 +27,14 @@ import reports
 
 app = Flask(__name__, static_folder=None)
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-secret-change-me")
+JWT_SECRET = os.environ.get("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "Змінна середовища JWT_SECRET не встановлена. Запуск без неї небезпечний: "
+        "усі токени входу підписувались би відомим усім значенням із коду, і будь-хто "
+        "міг би підробити токен адміна. Встановіть JWT_SECRET (довгий випадковий рядок) "
+        "перед запуском, наприклад: export JWT_SECRET=\"$(python3 -c 'import secrets; print(secrets.token_hex(32))')\""
+    )
 JWT_ALGO = "HS256"
 TOKEN_TTL_HOURS = 24 * 30  # токен дійсний місяць, щоб не переlogin-иватись щодня
 
@@ -123,6 +130,24 @@ def notify_admins_push(title, body, url=None):
             logging.getLogger(__name__).error(f"Помилка надсилання push адміну {sub_id}: {e}")
 
 
+def notify_parts_admin_push(title, body, url=None):
+    """Те саме, що notify_admins_push, але лише для адміна, позначеного
+    відповідальним за замовлення запчастин (get_parts_admin_push_subscriptions)."""
+    try:
+        subs = db.get_parts_admin_push_subscriptions()
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Не вдалось отримати підписки відповідального за запчастини: {e}")
+        return
+    for sub_id, endpoint, p256dh, auth in subs:
+        try:
+            subscription_info = {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+            result = push.send_push_notification(subscription_info, title, body, url)
+            if result is False:
+                db.remove_push_subscription(endpoint)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Помилка надсилання push відповідальному за запчастини {sub_id}: {e}")
+
+
 @app.route("/api/push/public-key", methods=["GET"])
 def push_public_key():
     return jsonify({"publicKey": vapid.get_public_key_b64()})
@@ -168,17 +193,54 @@ def push_test():
     return jsonify({"sent": sent, "failed": failed, "total_subscriptions": len(subs)})
 
 
+# ---------------------------------------------------------------------------
+# Обмеження спроб входу (проти підбору пароля).
+# Просте рішення в пам'яті процесу: не переживає рестарт і не ділиться станом
+# між кількома worker-ами gunicorn. Для 4 точок з невеликою командою цього
+# достатньо; для більшого навантаження варто перенести лічильники в Redis.
+# ---------------------------------------------------------------------------
+_LOGIN_ATTEMPTS = {}  # key -> [timestamps of failed attempts]
+LOGIN_MAX_ATTEMPTS = 5
+LOGIN_WINDOW_SECONDS = 15 * 60
+
+
+def _login_rate_limit_key():
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    username = (request.get_json(force=True, silent=True) or {}).get("username", "")
+    return f"{ip}:{username.strip().lower()}"
+
+
+def _is_login_rate_limited(key):
+    now = datetime.utcnow().timestamp()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(key, []) if now - t < LOGIN_WINDOW_SECONDS]
+    _LOGIN_ATTEMPTS[key] = attempts
+    return len(attempts) >= LOGIN_MAX_ATTEMPTS
+
+
+def _register_failed_login(key):
+    _LOGIN_ATTEMPTS.setdefault(key, []).append(datetime.utcnow().timestamp())
+
+
 @app.route("/api/login", methods=["POST"])
 def login():
+    rate_key = _login_rate_limit_key()
+    if _is_login_rate_limited(rate_key):
+        return jsonify({
+            "error": f"Забагато невдалих спроб входу. Спробуйте ще раз за {LOGIN_WINDOW_SECONDS // 60} хв."
+        }), 429
+
     data = request.get_json(force=True, silent=True) or {}
     username = (data.get("username") or "").strip()
     password = data.get("password") or ""
     row = db.get_user_by_username(username)
     if row is None:
+        _register_failed_login(rate_key)
         return jsonify({"error": "Невірний логін або пароль"}), 401
     user_id, uname, password_hash, role, location = row
     if not db.verify_password(password, password_hash):
+        _register_failed_login(rate_key)
         return jsonify({"error": "Невірний логін або пароль"}), 401
+    _LOGIN_ATTEMPTS.pop(rate_key, None)  # успішний вхід - скидаємо лічильник
     token = make_token(user_id, uname, role, location)
     return jsonify({"token": token, "role": role, "location": location, "username": uname})
 
@@ -206,6 +268,7 @@ def photo_url(filename):
 
 
 @app.route("/api/photos/<path:filename>")
+@login_required
 def serve_photo(filename):
     return send_from_directory(UPLOAD_DIR, filename)
 
@@ -535,8 +598,23 @@ def remove_seller_route(user_id):
 @login_required
 @head_admin_required
 def list_admins_route():
-    rows = db.list_users(role="admin")
-    return jsonify([{"id": r[0], "username": r[1]} for r in rows])
+    rows = db.list_admins_with_parts_flag()
+    return jsonify([
+        {"id": r[0], "username": r[1], "role": r[2], "handles_parts_orders": bool(r[3])}
+        for r in rows
+    ])
+
+
+@app.route("/api/admins/parts-responsible", methods=["PUT"])
+@login_required
+@head_admin_required
+def set_parts_responsible_route():
+    data = request.get_json(force=True, silent=True) or {}
+    user_id = data.get("user_id")  # None -> зняти позначку з усіх
+    ok = db.set_parts_responsible_admin(user_id)
+    if not ok:
+        return jsonify({"error": "Такого адміна не знайдено"}), 404
+    return jsonify({"ok": True})
 
 
 @app.route("/api/admins", methods=["POST"])
@@ -759,6 +837,40 @@ def recount_apply_route():
         summary = "; ".join(f"{c['name']} {c['old']}→{c['new']}" for c in changes)
         notify_admins_push("🔄 Переоблік завершено", f"{location}: {summary}"[:200])
     return jsonify({"changes": changes})
+
+
+# ---------------------------------------------------------------------------
+# Запчастини: продавець 1 кнопкою повідомляє адміна, відповідального за
+# замовлення запчастин (позначається головним адміном у 👑 Адміни).
+# ---------------------------------------------------------------------------
+@app.route("/api/parts/order-request", methods=["POST"])
+@login_required
+def parts_order_request():
+    data = request.get_json(force=True, silent=True) or {}
+    site_name = (data.get("site_name") or "").strip()
+    site_url = (data.get("site_url") or "").strip()
+    note = (data.get("note") or "").strip() or None
+    if not site_name or not site_url:
+        return jsonify({"error": "Не вказано сайт для замовлення"}), 400
+
+    responsible = db.get_parts_responsible_admin()
+    if responsible is None:
+        return jsonify({
+            "error": "Ще не призначено відповідального за запчастини. "
+                     "Попросіть головного адміна зробити це в розділі «👑 Адміни»."
+        }), 409
+
+    location = seller_location(g.user) or data.get("location")
+    db.create_parts_order_request(site_name, site_url, note, location, g.user["user_id"])
+
+    body = f"{g.user['username']}"
+    if location:
+        body += f" ({location})"
+    body += f": {site_name}"
+    if note:
+        body += f" — {note}"
+    notify_parts_admin_push("🔗 Запит на замовлення запчастин", body[:200], url=site_url)
+    return jsonify({"ok": True, "sent_to": responsible[1]})
 
 
 # ---------------------------------------------------------------------------

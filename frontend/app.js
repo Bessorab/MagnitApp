@@ -4,6 +4,15 @@
 
 const API = "/api";
 let TOKEN = localStorage.getItem("magnit_token") || null;
+
+// Фото тепер віддаються лише авторизованим (див. backend: /api/photos/... вимагає
+// login_required). Тег <img> не може надіслати заголовок Authorization, тому
+// передаємо токен як query-параметр, який login_required теж приймає.
+function authedPhotoUrl(url) {
+  if (!url || !TOKEN) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(TOKEN)}`;
+}
 let ME = null; // { user_id, username, role, location }
 
 function authHeaders(extra) {
@@ -195,7 +204,7 @@ function cameraInputHtml(id) {
 }
 
 function itemRowHtml(item, actionsHtml) {
-  const img = item.photo_url ? `<img src="${item.photo_url}">` : `<div style="width:56px;height:56px;background:#2a3648;border-radius:8px;"></div>`;
+  const img = item.photo_url ? `<img src="${authedPhotoUrl(item.photo_url)}">` : `<div style="width:56px;height:56px;background:#2a3648;border-radius:8px;"></div>`;
   return `
     <div class="item-row">
       ${img}
@@ -582,11 +591,27 @@ async function renderAdminsView() {
     } catch (err) { toast(err.message, "error"); }
   });
   const admins = await api("/admins");
-  document.getElementById("adminsList").innerHTML = admins.map(a =>
-    `<div class="item-row"><div class="info"><div class="name">${a.username}</div></div>
-     <button class="btn small danger" onclick="removeAdmin(${a.id})">Видалити</button></div>`
+  document.getElementById("adminsList").innerHTML = admins.map(a => `
+    <div class="item-row">
+      <div class="info">
+        <div class="name">${a.username}${a.role === "head_admin" ? " (головний)" : ""}</div>
+        <div class="meta">${a.handles_parts_orders ? "🔗 Відповідальний за запчастини" : ""}</div>
+      </div>
+      <button class="btn small ${a.handles_parts_orders ? "danger" : ""}" onclick="togglePartsResponsible(${a.id}, ${a.handles_parts_orders})">
+        ${a.handles_parts_orders ? "Зняти" : "Призначити за запчастини"}
+      </button>
+      ${a.role !== "head_admin" ? `<button class="btn small danger" onclick="removeAdmin(${a.id})">Видалити</button>` : ""}
+    </div>`
   ).join("") || "<p>Немає доданих адмінів.</p>";
 }
+
+window.togglePartsResponsible = async (id, isCurrentlyResponsible) => {
+  try {
+    await api("/admins/parts-responsible", { method: "PUT", json: { user_id: isCurrentlyResponsible ? null : id } });
+    toast(isCurrentlyResponsible ? "Знято позначку" : "✅ Призначено відповідальним за запчастини");
+    renderAdminsView();
+  } catch (err) { toast(err.message, "error"); }
+};
 
 window.removeAdmin = async (id) => {
   if (!confirm("Видалити цього адміна?")) return;
@@ -940,9 +965,25 @@ const PARTS_SITES = [
 function renderPartsView() {
   const view = document.getElementById("view");
   view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>` +
-    PARTS_SITES.map(s =>
-      `<a href="${s.url}" target="_blank" rel="noopener" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+    PARTS_SITES.map((s, i) => `
+      <div class="item-row">
+        <div class="info">
+          <a href="${s.url}" target="_blank" rel="noopener" style="color:inherit;">${s.name} ↗</a>
+        </div>
+        <button class="btn small" data-parts-order="${i}">📩 Замовити</button>
+      </div>`
     ).join("");
+
+  view.querySelectorAll("[data-parts-order]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const site = PARTS_SITES[Number(btn.dataset.partsOrder)];
+      const note = prompt(`Що саме замовити з ${site.name}? (необов'язково)`) || "";
+      try {
+        await api("/parts/order-request", { method: "POST", json: { site_name: site.name, site_url: site.url, note } });
+        toast(`✅ Надіслано відповідальному за запчастини`);
+      } catch (err) { toast(err.message, "error"); }
+    });
+  });
 }
 
 // ----------------------------------------------------------------------------
