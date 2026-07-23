@@ -11,6 +11,7 @@ MagnitApp - веб-застосунок (PWA) для обліку товарів
     python3 app.py
 """
 import os
+import logging
 import io
 import functools
 from datetime import datetime, timedelta
@@ -101,13 +102,25 @@ def seller_location(user):
 
 def notify_admins_push(title, body, url=None):
     """Надсилає push-сповіщення усім адмінам одразу (аналог розсилки
-    повідомлень усім адмінам у Telegram-версії)."""
-    subs = db.get_admin_push_subscriptions()
+    повідомлень усім адмінам у Telegram-версії).
+
+    Навмисно "ковтає" будь-яку помилку - сповіщення другорядні, і якщо
+    надсилання не вдалось (наприклад, pywebpush ще не встановлено, чи
+    тимчасова мережева помилка), основна дія користувача (зміна кількості,
+    прийняття квитанції тощо) все одно має завершитись успішно."""
+    try:
+        subs = db.get_admin_push_subscriptions()
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Не вдалось отримати підписки на push: {e}")
+        return
     for sub_id, endpoint, p256dh, auth in subs:
-        subscription_info = {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
-        result = push.send_push_notification(subscription_info, title, body, url)
-        if result is False:
-            db.remove_push_subscription(endpoint)
+        try:
+            subscription_info = {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+            result = push.send_push_notification(subscription_info, title, body, url)
+            if result is False:
+                db.remove_push_subscription(endpoint)
+        except Exception as e:
+            logging.getLogger(__name__).error(f"Помилка надсилання push адміну {sub_id}: {e}")
 
 
 @app.route("/api/push/public-key", methods=["GET"])
@@ -591,6 +604,14 @@ def complete_repair_route(repair_id):
     data = request.get_json(force=True)
     db.mark_repair_completed(repair_id, data["completion_date"])
     return jsonify({"ok": True})
+
+
+@app.route("/api/repairs/<int:repair_id>", methods=["DELETE"])
+@login_required
+def delete_repair_route(repair_id):
+    location = request.args.get("location") or seller_location(g.user)
+    ok = db.delete_repair(repair_id, location)
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/repairs/report", methods=["GET"])

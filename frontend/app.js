@@ -455,8 +455,12 @@ async function renderRepairIssueList() {
     const pending = await api("/repairs/pending");
     if (!pending.length) { area.innerHTML = "<p>Немає квитанцій в очікуванні видачі.</p>"; return; }
     area.innerHTML = pending.map(r =>
-      `<div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div></div>
-       <button class="btn small" onclick="issueRepair(${r.id})">Видати</button></div>`
+      `<div class="item-row">
+         <div class="info" style="cursor:pointer;" onclick="issueRepair(${r.id})">
+           <div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date} - торкніться, щоб видати</div>
+         </div>
+         <button class="btn small danger" onclick="deleteRepair(${r.id})">🗑️</button>
+       </div>`
     ).join("");
   } catch (err) { toast(err.message, "error"); }
 }
@@ -467,6 +471,18 @@ window.issueRepair = async (repairId) => {
   try {
     await api(`/repairs/${repairId}/complete`, { method: "POST", json: { completion_date: date } });
     toast("✅ Видано клієнту");
+    const sellerArea = document.getElementById("repairArea");
+    const adminPendingBtn = document.getElementById("repPendingBtn");
+    if (sellerArea) renderRepairIssueList();
+    else if (adminPendingBtn) adminPendingBtn.click();
+  } catch (err) { toast(err.message, "error"); }
+};
+
+window.deleteRepair = async (repairId) => {
+  if (!confirm("Видалити цю квитанцію з обліку? Дію не можна скасувати.")) return;
+  try {
+    await api(`/repairs/${repairId}`, { method: "DELETE" });
+    toast("🗑️ Квитанцію видалено");
     renderRepairIssueList();
   } catch (err) { toast(err.message, "error"); }
 };
@@ -723,12 +739,29 @@ function renderRepairRows(rows, pendingOnly) {
   const el = document.getElementById("repairAdminResult");
   if (!rows.length) { el.innerHTML = "<p>Нічого не знайдено.</p>"; return; }
   el.innerHTML = rows.map(r => {
-    const status = pendingOnly
-      ? `<span class="badge pending">в ремонті</span>`
-      : (r.completion_date ? `<span class="badge done">видано ${r.completion_date}</span>` : `<span class="badge pending">в ремонті</span>`);
-    return `<div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div></div>${status}</div>`;
+    const isPending = pendingOnly || !r.completion_date;
+    const status = r.completion_date
+      ? `<span class="badge done">видано ${r.completion_date}</span>`
+      : `<span class="badge pending">в ремонті</span>`;
+    const actions = isPending
+      ? `<div class="grid2" style="margin-top:6px;">
+           <button class="btn small" onclick="issueRepair(${r.id})">✅ Видати</button>
+           <button class="btn small danger" onclick="deleteRepairAdmin(${r.id})">🗑️ Видалити</button>
+         </div>`
+      : "";
+    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div></div>${status}</div>${actions}</div>`;
   }).join("");
 }
+
+window.deleteRepairAdmin = async (repairId) => {
+  if (!confirm("Видалити цю квитанцію з обліку? Дію не можна скасувати.")) return;
+  const loc = document.getElementById("repAdminLoc").value;
+  try {
+    await api(`/repairs/${repairId}?location=${encodeURIComponent(loc)}`, { method: "DELETE" });
+    toast("🗑️ Квитанцію видалено");
+    document.getElementById("repPendingBtn").click();
+  } catch (err) { toast(err.message, "error"); }
+};
 
 // ----------------------------------------------------------------------------
 // АДМІН: запити на зміну залишку (потребують підтвердження)

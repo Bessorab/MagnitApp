@@ -459,6 +459,15 @@ def mark_repair_completed(repair_id, completion_date):
         conn.commit()
 
 
+def delete_repair(repair_id, location):
+    """Видалення квитанції з ремонту (наприклад, помилково внесена).
+    Обмежено тією ж точкою, щоб продавець не міг видалити чужу."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute("DELETE FROM repairs WHERE id = ? AND location = ?", (repair_id, location))
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_repair_by_id(repair_id):
     with closing(get_connection()) as conn:
         cur = conn.execute(
