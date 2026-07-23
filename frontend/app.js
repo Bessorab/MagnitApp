@@ -80,7 +80,7 @@ async function doLogin(username, password) {
   localStorage.setItem("magnit_token", TOKEN);
   ME = data;
   showMainApp();
-  setupPushNotifications();
+  setupPushNotifications(false);
 }
 
 function doLogout() {
@@ -112,6 +112,7 @@ const SELLER_TABS = [
   { id: "supply", label: "📥 Прихід" },
   { id: "repairs", label: "🔧 Ремонти" },
   { id: "recount", label: "🔄 Переоблік" },
+  { id: "parts", label: "🔗 Запчастини" },
 ];
 const ADMIN_TABS = [
   { id: "sellers", label: "👥 Продавці" },
@@ -154,7 +155,7 @@ function goTab(tabId) {
     supply: renderSupplyView, repairs: renderRepairsSellerView, recount: renderRecountView,
     sellers: renderSellersView, price: renderPriceView, locations: renderLocationsView,
     reports: renderReportsView, repairs_admin: renderRepairsAdminView, admins: renderAdminsView,
-    requests: renderRequestsView,
+    requests: renderRequestsView, parts: renderPartsView,
   };
   (renderers[tabId] || renderSaleView)();
 }
@@ -169,6 +170,11 @@ function showMainApp() {
   document.getElementById("mainApp").classList.remove("hidden");
   document.getElementById("meLabel").textContent =
     `${ME.username} (${roleLabel(ME.role)}${ME.location ? ", " + ME.location : ""})`;
+  if (ME.role !== "seller") {
+    const testBtn = document.createElement("span");
+    testBtn.innerHTML = ` <button class="btn small secondary" onclick="sendTestPush()" style="margin-left:6px;">🔔 Тест сповіщення</button>`;
+    document.getElementById("meLabel").appendChild(testBtn);
+  }
   goTab(ME.role === "seller" ? "sale" : "sellers");
 }
 
@@ -921,6 +927,25 @@ async function renderRecountView() {
 }
 
 // ----------------------------------------------------------------------------
+// ПРОДАВЕЦЬ: швидкий перехід на сайти замовлення запчастин
+// ----------------------------------------------------------------------------
+const PARTS_SITES = [
+  { name: "FixUp.ua", url: "https://fixup.ua/uk" },
+  { name: "Welcome Mobi", url: "https://welcome-mobi.com.ua/" },
+  { name: "ArtMobile", url: "https://artmobile.ua/" },
+  { name: "M112", url: "https://m112.com.ua/" },
+  { name: "GSM Server", url: "https://gsmserver.com.ua/uk/" },
+];
+
+function renderPartsView() {
+  const view = document.getElementById("view");
+  view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>` +
+    PARTS_SITES.map(s =>
+      `<a href="${s.url}" target="_blank" rel="noopener" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+    ).join("");
+}
+
+// ----------------------------------------------------------------------------
 // Web Push - підписка на сповіщення (для адмінів)
 // ----------------------------------------------------------------------------
 function urlBase64ToUint8Array(base64String) {
@@ -930,12 +955,28 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
-async function setupPushNotifications() {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+async function setupPushNotifications(silentIfNotAsked) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    if (!silentIfNotAsked) toast("Цей браузер не підтримує push-сповіщення", "error");
+    return;
+  }
   if (ME.role === "seller") return; // сповіщення потрібні лише адмінам
-  try {
+
+  if (Notification.permission === "denied") {
+    if (!silentIfNotAsked) toast("Сповіщення заблоковано в налаштуваннях браузера для цього сайту - дозвольте вручну (значок 🔒 біля адреси сайту)", "error");
+    return;
+  }
+
+  if (Notification.permission === "default") {
+    if (silentIfNotAsked) { showPushBanner(); return; } // не питаємо дозвіл автоматично - лише по кліку
     const permission = await Notification.requestPermission();
-    if (permission !== "granted") return;
+    if (permission !== "granted") {
+      toast("Дозвіл на сповіщення не надано", "error");
+      return;
+    }
+  }
+
+  try {
     const reg = await navigator.serviceWorker.ready;
     const { publicKey } = await api("/push/public-key");
     let sub = await reg.pushManager.getSubscription();
@@ -947,10 +988,33 @@ async function setupPushNotifications() {
     }
     const json = sub.toJSON();
     await api("/push/subscribe", { method: "POST", json: { endpoint: json.endpoint, keys: json.keys } });
+    hidePushBanner();
+    if (!silentIfNotAsked) toast("🔔 Сповіщення увімкнено");
   } catch (err) {
-    console.warn("Push-підписка не вдалась:", err);
+    console.error("Push-підписка не вдалась:", err);
+    if (!silentIfNotAsked) toast("Не вдалось увімкнути сповіщення: " + err.message, "error");
   }
 }
+
+function showPushBanner() {
+  const banner = document.getElementById("pushBanner");
+  if (!banner) return;
+  banner.classList.remove("hidden");
+  banner.innerHTML = `<button class="btn small" id="enablePushBtn">🔔 Увімкнути сповіщення</button>`;
+  document.getElementById("enablePushBtn").addEventListener("click", () => setupPushNotifications(false));
+}
+
+function hidePushBanner() {
+  const banner = document.getElementById("pushBanner");
+  if (banner) { banner.classList.add("hidden"); banner.innerHTML = ""; }
+}
+
+window.sendTestPush = async () => {
+  try {
+    const res = await api("/push/test", { method: "POST" });
+    toast(`Надіслано: ${res.sent}, помилок: ${res.failed} (усього підписок: ${res.total_subscriptions})`);
+  } catch (err) { toast(err.message, "error"); }
+};
 
 // ----------------------------------------------------------------------------
 // Точка входу
@@ -969,5 +1033,5 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     navigator.serviceWorker.register("/service-worker.js").catch(() => {});
   }
   const restored = await tryRestoreSession();
-  if (restored) { showMainApp(); setupPushNotifications(); } else showLoginScreen();
+  if (restored) { showMainApp(); setupPushNotifications(true); } else showLoginScreen();
 })();

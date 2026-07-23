@@ -1,4 +1,4 @@
-const CACHE_NAME = "magnitapp-v1";
+const CACHE_NAME = "magnitapp-v2";
 const SHELL_FILES = ["/", "/index.html", "/app.css", "/app.js", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -18,14 +18,22 @@ self.addEventListener("activate", (event) => {
 });
 
 // API-запити завжди йдуть у мережу (дані мають бути актуальними).
-// Лише "оболонку" застосунку (HTML/CSS/JS) кешуємо для швидкого офлайн-відкриття.
+// "Оболонку" застосунку (HTML/CSS/JS) тепер теж беремо СПЕРШУ З МЕРЕЖІ, щоб
+// кожне оновлення коду одразу було видно користувачам - кеш використовується
+// лише як запасний варіант, якщо немає інтернету (офлайн-відкриття).
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (url.pathname.startsWith("/api/")) {
     return; // не кешуємо API
   }
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
 

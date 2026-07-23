@@ -146,6 +146,28 @@ def push_unsubscribe():
     return jsonify({"ok": True})
 
 
+@app.route("/api/push/test", methods=["POST"])
+@login_required
+@admin_required
+def push_test():
+    subs = db.get_admin_push_subscriptions()
+    if not subs:
+        return jsonify({"error": "Немає жодної підписки на сповіщення - спершу увімкніть їх кнопкою на головному екрані"}), 400
+    if not push.PYWEBPUSH_AVAILABLE:
+        return jsonify({"error": "На сервері не встановлено бібліотеку pywebpush (pip install pywebpush)"}), 500
+    sent, failed = 0, 0
+    for sub_id, endpoint, p256dh, auth in subs:
+        subscription_info = {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
+        result = push.send_push_notification(subscription_info, "🔔 Тестове сповіщення", "Якщо ви це бачите - усе працює!")
+        if result is True:
+            sent += 1
+        else:
+            failed += 1
+            if result is False:
+                db.remove_push_subscription(endpoint)
+    return jsonify({"sent": sent, "failed": failed, "total_subscriptions": len(subs)})
+
+
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json(force=True, silent=True) or {}
