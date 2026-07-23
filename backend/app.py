@@ -357,6 +357,28 @@ def edit_price_by_barcode():
     return jsonify({"updated_count": count})
 
 
+@app.route("/api/items/detect-barcode-for-price", methods=["POST"])
+@login_required
+@admin_required
+def detect_barcode_for_price():
+    """Для кнопки «Змінити ціну» - лише читає штрихкод з фото (без прив'язки
+    до точки, бо ціна за штрихкодом змінюється одразу на всіх точках)."""
+    photo = request.files.get("photo")
+    if photo is None:
+        return jsonify({"error": "Немає фото"}), 400
+    photo_bytes = photo.read()
+    barcode = imaging.detect_barcodes(photo_bytes)
+    if not barcode:
+        return jsonify({"barcode": None, "item": None})
+    item = db.get_item_by_barcode_any_location(barcode)
+    item_dict = None
+    if item:
+        item_id, photo_path, name, color, price, quantity, location = item
+        item_dict = {"id": item_id, "photo_url": photo_url(photo_path), "name": name, "color": color,
+                     "price": price, "quantity": quantity, "location": location}
+    return jsonify({"barcode": barcode, "item": item_dict})
+
+
 @app.route("/api/sales", methods=["POST"])
 @login_required
 def create_sale():
@@ -610,7 +632,49 @@ def complete_repair_route(repair_id):
 @login_required
 def delete_repair_route(repair_id):
     location = request.args.get("location") or seller_location(g.user)
-    ok = db.delete_repair(repair_id, location)
+
+    if g.user["role"] in ("admin", "head_admin"):
+        ok = db.delete_repair(repair_id, location)
+        return jsonify({"ok": ok, "direct": True})
+
+    # Продавець - лише запит, який має підтвердити адмін.
+    repair = db.get_repair_by_id(repair_id)
+    if repair is None:
+        return jsonify({"error": "Квитанцію не знайдено"}), 404
+    receipt_number = repair[2]
+    request_id = db.create_repair_delete_request(repair_id, location, receipt_number, g.user["user_id"])
+    notify_admins_push(
+        "🗑️ Запит на видалення квитанції",
+        f"{g.user['username']} ({location}): квитанція №{receipt_number}",
+    )
+    return jsonify({"ok": True, "direct": False, "request_id": request_id})
+
+
+@app.route("/api/repair-delete-requests/pending", methods=["GET"])
+@login_required
+@admin_required
+def pending_repair_delete_requests_route():
+    location = request.args.get("location")
+    rows = db.get_pending_repair_delete_requests(location)
+    return jsonify([
+        {"id": r[0], "repair_id": r[1], "location": r[2], "receipt_number": r[3], "requested_at": r[4]}
+        for r in rows
+    ])
+
+
+@app.route("/api/repair-delete-requests/<int:request_id>/approve", methods=["POST"])
+@login_required
+@admin_required
+def approve_repair_delete_request_route(request_id):
+    ok = db.decide_repair_delete_request(request_id, True, g.user["user_id"])
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/repair-delete-requests/<int:request_id>/reject", methods=["POST"])
+@login_required
+@admin_required
+def reject_repair_delete_request_route(request_id):
+    ok = db.decide_repair_delete_request(request_id, False, g.user["user_id"])
     return jsonify({"ok": ok})
 
 

@@ -154,6 +154,21 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS repair_delete_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repair_id INTEGER NOT NULL,
+                location TEXT NOT NULL,
+                receipt_number TEXT,
+                requested_by INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+                requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                decided_at TEXT,
+                decided_by INTEGER
+            )
+            """
+        )
         conn.commit()
 
 
@@ -315,6 +330,17 @@ def update_price_by_barcode(barcode, new_price):
         cur = conn.execute("UPDATE items SET price = ? WHERE barcode = ?", (new_price, barcode))
         conn.commit()
         return cur.rowcount
+
+
+def get_item_by_barcode_any_location(barcode):
+    """Знаходить один товар з таким штрихкодом незалежно від точки - лише
+    щоб показати назву/колір/поточну ціну перед зміною (адмін)."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT id, photo_path, name, color, price, quantity, location FROM items WHERE barcode = ? LIMIT 1",
+            (barcode,),
+        )
+        return cur.fetchone()
 
 
 def delete_item(location, item_id):
@@ -574,6 +600,55 @@ def decide_qty_request(request_id, approve: bool, decided_by):
             conn.execute(
                 "UPDATE items SET quantity = ? WHERE id = ? AND location = ?", (new_quantity, item_id, location)
             )
+        conn.commit()
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Запити на видалення квитанції з ремонту (продавець -> потребує підтвердження адміна)
+# ---------------------------------------------------------------------------
+def create_repair_delete_request(repair_id, location, receipt_number, requested_by):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "INSERT INTO repair_delete_requests (repair_id, location, receipt_number, requested_by, requested_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (repair_id, location, receipt_number, requested_by, now_str()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_pending_repair_delete_requests(location=None):
+    with closing(get_connection()) as conn:
+        if location:
+            cur = conn.execute(
+                "SELECT id, repair_id, location, receipt_number, requested_at FROM repair_delete_requests "
+                "WHERE status = 'pending' AND location = ? ORDER BY requested_at",
+                (location,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT id, repair_id, location, receipt_number, requested_at FROM repair_delete_requests "
+                "WHERE status = 'pending' ORDER BY requested_at"
+            )
+        return cur.fetchall()
+
+
+def decide_repair_delete_request(request_id, approve: bool, decided_by):
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT repair_id, location, status FROM repair_delete_requests WHERE id = ?", (request_id,)
+        ).fetchone()
+        if row is None or row[2] != "pending":
+            return False
+        repair_id, location, _ = row
+        status = "approved" if approve else "rejected"
+        conn.execute(
+            "UPDATE repair_delete_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
+            (status, now_str(), decided_by, request_id),
+        )
+        if approve:
+            conn.execute("DELETE FROM repairs WHERE id = ? AND location = ?", (repair_id, location))
         conn.commit()
         return True
 

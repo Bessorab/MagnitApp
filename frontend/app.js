@@ -201,12 +201,17 @@ function itemRowHtml(item, actionsHtml) {
     </div>`;
 }
 
-async function locationPickerHtml(selectedId) {
-  const locations = await api("/locations");
+async function getLocations() {
+  return api("/locations");
+}
+
+function locationSelectHtml(selectedId, locations) {
   return `<select id="${selectedId}">` +
     locations.map(l => `<option value="${l}">${l}</option>`).join("") +
     `</select>`;
 }
+
+const NO_LOCATIONS_HTML = `<div class="card"><p>⚠️ Ще немає жодної зареєстрованої точки. Спершу додайте продавця з точкою у вкладці «👥 Продавці».</p></div>`;
 
 // ----------------------------------------------------------------------------
 // ПРОДАВЕЦЬ: продаж
@@ -479,10 +484,10 @@ window.issueRepair = async (repairId) => {
 };
 
 window.deleteRepair = async (repairId) => {
-  if (!confirm("Видалити цю квитанцію з обліку? Дію не можна скасувати.")) return;
+  if (!confirm("Надіслати адміну запит на видалення цієї квитанції?")) return;
   try {
-    await api(`/repairs/${repairId}`, { method: "DELETE" });
-    toast("🗑️ Квитанцію видалено");
+    const res = await api(`/repairs/${repairId}`, { method: "DELETE" });
+    toast(res.direct ? "🗑️ Квитанцію видалено" : "📨 Запит на видалення надіслано адміну");
     renderRepairIssueList();
   } catch (err) { toast(err.message, "error"); }
 };
@@ -571,10 +576,17 @@ function renderPriceView() {
   view.innerHTML = `
     <h2>💰 Змінити ціну</h2>
     <div class="card">
+      <h3>📷 Сфотографувати штрихкод</h3>
+      ${cameraInputHtml("pricePhotoInput")}
+      <div id="priceScanResult"></div>
+    </div>
+    <div class="card">
+      <h3>Або ввести штрихкод вручну</h3>
       <label>Штрихкод</label><input id="priceBarcode">
       <label>Нова ціна</label><input id="priceValue" type="number" step="0.01">
       <button class="btn" id="priceSaveBtn">Зберегти</button>
     </div>`;
+  document.getElementById("pricePhotoInput").addEventListener("change", handlePricePhoto);
   document.getElementById("priceSaveBtn").addEventListener("click", async () => {
     try {
       const res = await api("/items/price-by-barcode", { method: "POST", json: { barcode: document.getElementById("priceBarcode").value, price: parseFloat(document.getElementById("priceValue").value) } });
@@ -583,23 +595,54 @@ function renderPriceView() {
   });
 }
 
+async function handlePricePhoto(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const resultEl = document.getElementById("priceScanResult");
+  resultEl.innerHTML = "<p>Стискаю і аналізую фото...</p>";
+  const resized = await resizePhotoBeforeUpload(file);
+  const form = new FormData();
+  form.append("photo", resized);
+  try {
+    const data = await api("/items/detect-barcode-for-price", { method: "POST", form });
+    if (!data.barcode) {
+      resultEl.innerHTML = `<p>Штрихкод не розпізнано. Спробуйте ще раз або введіть вручну нижче.</p>`;
+      return;
+    }
+    const itemInfo = data.item ? `<p>Знайдено: ${data.item.name || "?"} — ${data.item.color} (точка «${data.item.location}»), поточна ціна: ${data.item.price} грн</p>` : `<p>Товару з таким штрихкодом ще немає в базі жодної точки.</p>`;
+    resultEl.innerHTML = `
+      ${itemInfo}
+      <p>Штрихкод: <b>${data.barcode}</b></p>
+      <label>Нова ціна</label><input id="priceScanValue" type="number" step="0.01">
+      <button class="btn" id="priceScanSaveBtn">Зберегти нову ціну</button>`;
+    document.getElementById("priceScanSaveBtn").addEventListener("click", async () => {
+      try {
+        const res = await api("/items/price-by-barcode", { method: "POST", json: { barcode: data.barcode, price: parseFloat(document.getElementById("priceScanValue").value) } });
+        toast(`✅ Оновлено на ${res.updated_count} товар(ах)`);
+        renderPriceView();
+      } catch (err) { toast(err.message, "error"); }
+    });
+  } catch (err) { resultEl.innerHTML = ""; toast(err.message, "error"); }
+}
+
 // ----------------------------------------------------------------------------
 // АДМІН: точки (перейменувати / очистити)
 // ----------------------------------------------------------------------------
 async function renderLocationsView() {
   const view = document.getElementById("view");
-  const locations = await api("/locations");
+  const locations = await getLocations();
+  if (!locations.length) { view.innerHTML = `<h2>🏷️ Торгові точки</h2>` + NO_LOCATIONS_HTML; return; }
   view.innerHTML = `
     <h2>🏷️ Торгові точки</h2>
     <div class="card">
       <h3>Перейменувати</h3>
-      <label>Стара назва</label>${await locationPickerHtml("renameOld")}
+      <label>Стара назва</label>${locationSelectHtml("renameOld", locations)}
       <label>Нова назва</label><input id="renameNew">
       <button class="btn" id="renameBtn">Перейменувати</button>
     </div>
     <div class="card">
       <h3>⚠️ Очистити точку (видалить УСІ товари)</h3>
-      ${await locationPickerHtml("clearLoc")}
+      ${locationSelectHtml("clearLoc", locations)}
       <button class="btn danger" id="clearBtn">Очистити</button>
     </div>`;
   document.getElementById("renameBtn").addEventListener("click", async () => {
@@ -625,11 +668,11 @@ async function renderLocationsView() {
 // ----------------------------------------------------------------------------
 async function renderReportsView() {
   const view = document.getElementById("view");
-  view.innerHTML = `
-    <h2>📈 Звіти продажів</h2>
+  const locations = await getLocations();
+  const perLocationCard = locations.length ? `
     <div class="card">
       <h3>По точці за період</h3>
-      ${await locationPickerHtml("reportLoc")}
+      ${locationSelectHtml("reportLoc", locations)}
       <div class="grid2">
         <input id="reportStart" type="date">
         <input id="reportEnd" type="date">
@@ -638,12 +681,16 @@ async function renderReportsView() {
         <button class="btn" id="reportLocBtn">Показати</button>
         <button class="btn secondary" id="reportLocXlsxBtn">📊 Excel</button>
       </div>
-    </div>
+    </div>` : NO_LOCATIONS_HTML;
+  view.innerHTML = `
+    <h2>📈 Звіти продажів</h2>
+    ${perLocationCard}
     <div class="card">
       <button class="btn secondary" id="reportAllTodayBtn">📊 Продажі сьогодні (всі точки)</button>
       <button class="btn secondary" id="reportAllXlsxBtn">📊 Excel за період (всі точки)</button>
     </div>
     <div id="reportResult"></div>`;
+  if (locations.length) {
   document.getElementById("reportLocBtn").addEventListener("click", async () => {
     const loc = document.getElementById("reportLoc").value;
     const start = document.getElementById("reportStart").value;
@@ -659,6 +706,7 @@ async function renderReportsView() {
     const end = document.getElementById("reportEnd").value;
     downloadFile(`/sales/report.xlsx?location=${encodeURIComponent(loc)}&start=${start}&end=${end}`);
   });
+  }
   document.getElementById("reportAllTodayBtn").addEventListener("click", async () => {
     const today = new Date().toISOString().slice(0, 10);
     try {
@@ -702,10 +750,12 @@ function renderSalesRows(rows) {
 // ----------------------------------------------------------------------------
 async function renderRepairsAdminView() {
   const view = document.getElementById("view");
+  const locations = await getLocations();
+  if (!locations.length) { view.innerHTML = `<h2>🔧 Ремонти</h2>` + NO_LOCATIONS_HTML; return; }
   view.innerHTML = `
     <h2>🔧 Ремонти</h2>
     <div class="card">
-      ${await locationPickerHtml("repAdminLoc")}
+      ${locationSelectHtml("repAdminLoc", locations)}
       <button class="btn secondary" id="repPendingBtn">📋 Ще не видані</button>
       <div class="grid2">
         <input id="repStart" type="date">
@@ -768,25 +818,50 @@ window.deleteRepairAdmin = async (repairId) => {
 // ----------------------------------------------------------------------------
 async function renderRequestsView() {
   const view = document.getElementById("view");
-  view.innerHTML = `<h2>🔔 Запити на зміну залишку</h2><div id="requestsList">Завантаження...</div>`;
+  view.innerHTML = `<h2>🔔 Запити</h2><div id="requestsList">Завантаження...</div>`;
   await loadRequestsList();
 }
 
 async function loadRequestsList() {
   const listEl = document.getElementById("requestsList");
   try {
-    const rows = await api("/qty-requests/pending");
-    listEl.innerHTML = rows.length ? rows.map(r => `
-      <div class="card">
-        <div class="name">${r.name || "?"} — ${r.color} (${r.location})</div>
-        <div class="meta">${r.old_quantity} → ${r.new_quantity}${r.reason ? " | Причина: " + r.reason : ""}</div>
-        <div class="grid2" style="margin-top:8px;">
-          <button class="btn" onclick="decideRequest(${r.id}, true)">✅ Підтвердити</button>
-          <button class="btn danger" onclick="decideRequest(${r.id}, false)">❌ Відхилити</button>
-        </div>
-      </div>`).join("") : "<p>Немає запитів, що очікують підтвердження.</p>";
+    const [qtyRows, repairRows] = await Promise.all([
+      api("/qty-requests/pending"),
+      api("/repair-delete-requests/pending"),
+    ]);
+    let html = "";
+    if (qtyRows.length) {
+      html += `<h3>✏️ Зміна залишку</h3>` + qtyRows.map(r => `
+        <div class="card">
+          <div class="name">${r.name || "?"} — ${r.color} (${r.location})</div>
+          <div class="meta">${r.old_quantity} → ${r.new_quantity}${r.reason ? " | Причина: " + r.reason : ""}</div>
+          <div class="grid2" style="margin-top:8px;">
+            <button class="btn" onclick="decideRequest(${r.id}, true)">✅ Підтвердити</button>
+            <button class="btn danger" onclick="decideRequest(${r.id}, false)">❌ Відхилити</button>
+          </div>
+        </div>`).join("");
+    }
+    if (repairRows.length) {
+      html += `<h3>🗑️ Видалення квитанцій ремонту</h3>` + repairRows.map(r => `
+        <div class="card">
+          <div class="name">№${r.receipt_number} (${r.location})</div>
+          <div class="grid2" style="margin-top:8px;">
+            <button class="btn" onclick="decideRepairDeleteRequest(${r.id}, true)">✅ Підтвердити</button>
+            <button class="btn danger" onclick="decideRepairDeleteRequest(${r.id}, false)">❌ Відхилити</button>
+          </div>
+        </div>`).join("");
+    }
+    listEl.innerHTML = html || "<p>Немає запитів, що очікують підтвердження.</p>";
   } catch (err) { toast(err.message, "error"); }
 }
+
+window.decideRepairDeleteRequest = async (id, approve) => {
+  try {
+    await api(`/repair-delete-requests/${id}/${approve ? "approve" : "reject"}`, { method: "POST" });
+    toast(approve ? "✅ Квитанцію видалено" : "Відхилено");
+    loadRequestsList();
+  } catch (err) { toast(err.message, "error"); }
+};
 
 window.decideRequest = async (id, approve) => {
   try {
