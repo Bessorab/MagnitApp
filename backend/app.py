@@ -766,10 +766,14 @@ def set_repair_baseline_route():
 def pending_repairs_route():
     location = request.args.get("location") or seller_location(g.user)
     rows = db.get_pending_repairs(location)
-    return jsonify([
-        {"id": r[0], "photo_url": photo_url(r[1]), "receipt_number": r[2], "intake_date": r[3]}
-        for r in rows
-    ])
+    result = []
+    for r in rows:
+        parts = db.get_part_requests_for_repair(r[0])
+        result.append({
+            "id": r[0], "photo_url": photo_url(r[1]), "receipt_number": r[2], "intake_date": r[3],
+            "parts": [{"link": p[0], "note": p[1], "status": p[2]} for p in parts],
+        })
+    return jsonify(result)
 
 
 @app.route("/api/repairs/<int:repair_id>/complete", methods=["POST"])
@@ -973,13 +977,15 @@ def repairs_report_route():
     start = request.args.get("start")
     end = request.args.get("end")
     rows = db.get_repairs_by_period(location, start, end)
-    return jsonify([
-        {
+    result = []
+    for r in rows:
+        parts = db.get_part_requests_for_repair(r[0])
+        result.append({
             "id": r[0], "photo_url": photo_url(r[1]), "receipt_number": r[2],
             "intake_date": r[3], "completion_date": r[4], "cost": r[5], "payment_method": r[6],
-        }
-        for r in rows
-    ])
+            "parts": [{"link": p[0], "note": p[1], "status": p[2]} for p in parts],
+        })
+    return jsonify(result)
 
 
 @app.route("/api/repairs/report.xlsx", methods=["GET"])
@@ -989,7 +995,8 @@ def repairs_report_xlsx():
     start = request.args.get("start")
     end = request.args.get("end")
     rows = db.get_repairs_by_period(location, start, end)
-    buf = reports.build_repairs_excel(rows)
+    parts_by_repair = {r[0]: db.get_part_requests_for_repair(r[0]) for r in rows}
+    buf = reports.build_repairs_excel(rows, parts_by_repair)
     filename = f"ремонти_{location}_{start}_{end}.xlsx"
     return send_file(buf, as_attachment=True, download_name=filename,
                       mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")

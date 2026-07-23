@@ -555,14 +555,20 @@ async function renderRepairIssueList() {
   try {
     const pending = await api("/repairs/pending");
     if (!pending.length) { area.innerHTML = "<p>Немає квитанцій в очікуванні видачі.</p>"; return; }
-    area.innerHTML = pending.map(r =>
-      `<div class="item-row">
+    area.innerHTML = pending.map(r => {
+      const partsLine = (r.parts && r.parts.length)
+        ? `<div class="meta">🔩 ` + r.parts.map(p =>
+            `<a href="${p.link}" style="color:#5b9bd5;">${p.note || p.link}</a>${p.status === "done" ? " ✅" : " ⏳"}`
+          ).join(", ") + `</div>`
+        : "";
+      return `<div class="item-row">
          <div class="info" style="cursor:pointer;" onclick="issueRepair(${r.id})">
            <div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date} - торкніться, щоб видати</div>
+           ${partsLine}
          </div>
          <button class="btn small danger" onclick="deleteRepair(${r.id})">🗑️</button>
-       </div>`
-    ).join("");
+       </div>`;
+    }).join("");
   } catch (err) { toast(err.message, "error"); }
 }
 
@@ -934,13 +940,18 @@ function renderRepairRows(rows, pendingOnly) {
       : `<span class="badge pending">в ремонті</span>`;
     const costLine = (!isPending && r.cost != null)
       ? `<div class="meta">Сума: ${r.cost} грн | ${r.payment_method || "?"}</div>` : "";
+    const partsLine = (r.parts && r.parts.length)
+      ? `<div class="meta">🔩 Запчастини: ` + r.parts.map(p =>
+          `<a href="${p.link}" style="color:#5b9bd5;">${p.note || p.link}</a>${p.status === "done" ? " ✅" : " ⏳"}`
+        ).join(", ") + `</div>`
+      : "";
     const actions = isPending
       ? `<div class="grid2" style="margin-top:6px;">
            <button class="btn small" onclick="issueRepair(${r.id})">✅ Видати</button>
            <button class="btn small danger" onclick="deleteRepairAdmin(${r.id})">🗑️ Видалити</button>
          </div>`
       : "";
-    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div>${costLine}</div>${status}</div>${actions}</div>`;
+    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div>${costLine}${partsLine}</div>${status}</div>${actions}</div>`;
   }).join("");
 }
 

@@ -617,6 +617,18 @@ def get_repairs_by_period(location, start_date, end_date):
         return cur.fetchall()
 
 
+def get_part_requests_for_repair(repair_id):
+    """Усі запчастини, прив'язані до конкретної квитанції ремонту - щоб
+    адмін, відповідальний за ремонт, бачив, яку деталь замовляли для якого
+    ремонту."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT link, note, status FROM part_requests WHERE repair_id = ? ORDER BY requested_at",
+            (repair_id,),
+        )
+        return cur.fetchall()
+
+
 # ---------------------------------------------------------------------------
 # Web Push - підписки
 # ---------------------------------------------------------------------------
