@@ -907,6 +907,41 @@ def my_part_requests_route():
     ])
 
 
+@app.route("/api/part-requests/unlinked", methods=["GET"])
+@login_required
+def unlinked_part_requests_route():
+    """Власні запити продавця без прив'язки до квитанції - щоб можна було
+    прив'язати їх, коли квитанція буде оформлена з клієнтом."""
+    rows = db.get_unlinked_part_requests_by_user(g.user["user_id"])
+    return jsonify([
+        {"id": r[0], "link": r[1], "note": r[2], "requested_at": r[3]}
+        for r in rows
+    ])
+
+
+@app.route("/api/part-requests/<int:request_id>/link-repair", methods=["POST"])
+@login_required
+def link_part_request_route(request_id):
+    """Продавець прив'язує СВІЙ раніше надісланий запит до квитанції на
+    СВОЇЙ точці."""
+    row = db.get_part_request_by_id(request_id)
+    if row is None:
+        return jsonify({"error": "Запит не знайдено"}), 404
+    _, location, link, note, requested_by, status, repair_id = row
+    if requested_by != g.user["user_id"] and g.user["role"] not in ("admin", "head_admin"):
+        return jsonify({"error": "Це не ваш запит"}), 403
+
+    data = request.get_json(force=True)
+    new_repair_id = data.get("repair_id")
+    if new_repair_id:
+        repair = db.get_repair_by_id(new_repair_id)
+        if repair is None or repair[4] != location:
+            return jsonify({"error": "Квитанцію не знайдено на цій точці"}), 404
+
+    db.link_part_request_to_repair(request_id, new_repair_id or None)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/part-requests/<int:request_id>", methods=["PATCH"])
 @login_required
 @admin_required

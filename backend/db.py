@@ -833,6 +833,27 @@ def get_part_requests_by_user(user_id):
         return cur.fetchall()
 
 
+def get_unlinked_part_requests_by_user(user_id):
+    """Власні запити продавця, які ще НЕ прив'язані до жодної квитанції -
+    щоб міг прив'язати їх пізніше, коли оформить квитанцію з клієнтом."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT id, link, note, requested_at FROM part_requests "
+            "WHERE requested_by = ? AND repair_id IS NULL ORDER BY requested_at DESC",
+            (user_id,),
+        )
+        return cur.fetchall()
+
+
+def link_part_request_to_repair(request_id, repair_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "UPDATE part_requests SET repair_id = ? WHERE id = ?", (repair_id, request_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
 def get_part_request_by_id(request_id):
     with closing(get_connection()) as conn:
         cur = conn.execute(

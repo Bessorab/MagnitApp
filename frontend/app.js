@@ -544,8 +544,35 @@ function renderRepairNewForm() {
       const res = await api("/repairs", { method: "POST", form });
       toast("✅ Квитанцію прийнято");
       if (res.gap_warning) toast("⚠️ " + res.gap_warning, "warn");
-      renderRepairsSellerView();
+      await offerLinkUnlinkedParts(res.id, area);
     } catch (err) { toast(err.message, "error"); }
+  });
+}
+
+async function offerLinkUnlinkedParts(repairId, area) {
+  let unlinked = [];
+  try { unlinked = await api("/part-requests/unlinked"); } catch (err) { /* ігноруємо */ }
+  if (!unlinked.length) { renderRepairsSellerView(); return; }
+  area.innerHTML = `
+    <div class="card">
+      <h3>🔩 Прив'язати раніше надіслані запчастини?</h3>
+      <p style="color:#93a3b8;font-size:13px;">Оберіть, які з ваших уже надісланих запчастин стосуються цієї квитанції.</p>
+      ${unlinked.map(p => `
+        <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:8px;">
+          <input type="checkbox" class="unlinked-part-cb" value="${p.id}" style="width:auto;margin:0;">
+          <span>${p.note || p.link}</span>
+        </label>`).join("")}
+      <button class="btn" id="linkPartsBtn" style="margin-top:8px;">Прив'язати обрані</button>
+      <button class="btn secondary" id="skipLinkBtn">Пропустити</button>
+    </div>`;
+  document.getElementById("skipLinkBtn").addEventListener("click", renderRepairsSellerView);
+  document.getElementById("linkPartsBtn").addEventListener("click", async () => {
+    const checked = Array.from(document.querySelectorAll(".unlinked-part-cb:checked")).map(cb => cb.value);
+    try {
+      await Promise.all(checked.map(id => api(`/part-requests/${id}/link-repair`, { method: "POST", json: { repair_id: repairId } })));
+      toast(`✅ Прив'язано ${checked.length} запчастин(и)`);
+    } catch (err) { toast(err.message, "error"); }
+    renderRepairsSellerView();
   });
 }
 
@@ -1248,15 +1275,54 @@ async function renderPartsView() {
     document.getElementById("myPartsList").innerHTML = mine.length ? mine.map(r => {
       const status = r.status === "done" ? `<span class="badge done">оброблено</span>` : `<span class="badge pending">очікує</span>`;
       const repairLine = r.receipt_number ? `<div class="meta">Для квитанції №${r.receipt_number}</div>` : "";
+      const linkBtn = !r.repair_id
+        ? `<button class="btn small secondary" style="margin-top:8px;" onclick="openLinkRepairModal(${r.id})">🔗 Прив'язати до квитанції</button>`
+        : "";
       return `<div class="card">
         <div class="name">${r.note || "(без коментаря)"} ${status}</div>
         <div class="meta"><a href="${r.link}" style="color:#5b9bd5;">${r.link}</a></div>
         ${repairLine}
-        <button class="btn small danger" style="margin-top:8px;" onclick="deleteMyPartRequest(${r.id})">🗑️ Видалити</button>
+        <div class="grid2" style="margin-top:8px;">
+          ${linkBtn}
+          <button class="btn small danger" onclick="deleteMyPartRequest(${r.id})">🗑️ Видалити</button>
+        </div>
       </div>`;
     }).join("") : "<p style='color:#93a3b8;'>Ще нічого не надсилали.</p>";
   } catch (err) { toast(err.message, "error"); }
 }
+
+window.openLinkRepairModal = async (requestId) => {
+  let pending = [];
+  try { pending = await api("/repairs/pending"); } catch (err) { toast(err.message, "error"); return; }
+  if (!pending.length) { toast("Немає квитанцій в очікуванні на вашій точці", "error"); return; }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <h3>🔗 Прив'язати до квитанції</h3>
+      <select id="linkRepairSelect">
+        ${pending.map(r => `<option value="${r.id}">№${r.receipt_number} (прийнято ${r.intake_date})</option>`).join("")}
+      </select>
+      <div class="grid2">
+        <button class="btn secondary" id="linkRepairCancel">Скасувати</button>
+        <button class="btn" id="linkRepairSave">Прив'язати</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("linkRepairCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.getElementById("linkRepairSave").addEventListener("click", async () => {
+    const repairId = document.getElementById("linkRepairSelect").value;
+    try {
+      await api(`/part-requests/${requestId}/link-repair`, { method: "POST", json: { repair_id: repairId } });
+      toast("✅ Прив'язано");
+      close();
+      renderPartsView();
+    } catch (err) { toast(err.message, "error"); }
+  });
+};
 
 window.deleteMyPartRequest = (id) => {
   showConfirmModal("Видалити це своє посилання на запчастину?", async () => {
