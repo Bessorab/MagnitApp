@@ -136,25 +136,6 @@ def init_db():
             )
             """
         )
-        # Міграція: позначка "відповідальний за замовлення запчастин" (лише
-        # в одного адміна одночасно - перевіряється в set_parts_responsible_admin).
-        try:
-            conn.execute("ALTER TABLE users ADD COLUMN handles_parts_orders INTEGER NOT NULL DEFAULT 0")
-        except Exception:
-            pass
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS parts_order_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                site_name TEXT NOT NULL,
-                site_url TEXT NOT NULL,
-                note TEXT,
-                location TEXT,
-                requested_by INTEGER,
-                requested_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -193,6 +174,21 @@ def init_db():
                 receipt_number TEXT,
                 requested_by INTEGER,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+                requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                decided_at TEXT,
+                decided_by INTEGER
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS part_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                location TEXT NOT NULL,
+                link TEXT NOT NULL,
+                note TEXT,
+                requested_by INTEGER,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'done')),
                 requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 decided_at TEXT,
                 decided_by INTEGER
@@ -264,16 +260,6 @@ def list_users(role=None):
             cur = conn.execute("SELECT id, username, role, location FROM users WHERE role = ? ORDER BY username", (role,))
         else:
             cur = conn.execute("SELECT id, username, role, location FROM users ORDER BY role, username")
-        return cur.fetchall()
-
-
-def list_admins_with_parts_flag():
-    """Список адмінів (без head_admin) з позначкою, хто відповідальний за запчастини."""
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, username, role, handles_parts_orders FROM users "
-            "WHERE role IN ('admin', 'head_admin') ORDER BY role, username"
-        )
         return cur.fetchall()
 
 
@@ -586,55 +572,6 @@ def get_admin_push_subscriptions():
 
 
 # ---------------------------------------------------------------------------
-# Відповідальний за замовлення запчастин (один конкретний адмін).
-# ---------------------------------------------------------------------------
-def set_parts_responsible_admin(user_id):
-    """Позначає user_id єдиним відповідальним за запчастини, знімає позначку
-    з усіх інших. user_id=None - зняти позначку з усіх (нікого не призначено)."""
-    with closing(get_connection()) as conn:
-        conn.execute("UPDATE users SET handles_parts_orders = 0")
-        if user_id is not None:
-            cur = conn.execute(
-                "UPDATE users SET handles_parts_orders = 1 WHERE id = ? AND role IN ('admin', 'head_admin')",
-                (user_id,),
-            )
-            conn.commit()
-            return cur.rowcount > 0
-        conn.commit()
-        return True
-
-
-def get_parts_responsible_admin():
-    """Повертає (id, username) відповідального адміна, або None, якщо не призначено."""
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, username FROM users WHERE handles_parts_orders = 1 LIMIT 1"
-        )
-        return cur.fetchone()
-
-
-def get_parts_admin_push_subscriptions():
-    """Підписки лише того адміна, який позначений відповідальним за запчастини."""
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT ps.id, ps.endpoint, ps.p256dh, ps.auth FROM push_subscriptions ps "
-            "JOIN users u ON u.id = ps.user_id WHERE u.handles_parts_orders = 1"
-        )
-        return cur.fetchall()
-
-
-def create_parts_order_request(site_name, site_url, note, location, requested_by):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "INSERT INTO parts_order_requests (site_name, site_url, note, location, requested_by, requested_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (site_name, site_url, note, location, requested_by, now_str()),
-        )
-        conn.commit()
-        return cur.lastrowid
-
-
-# ---------------------------------------------------------------------------
 # Запити на зміну кількості (продавець -> потребує підтвердження адміна)
 # ---------------------------------------------------------------------------
 def create_qty_request(item_id, location, old_quantity, new_quantity, reason, requested_by):
@@ -743,6 +680,45 @@ def decide_repair_delete_request(request_id, approve: bool, decided_by):
             conn.execute("DELETE FROM repairs WHERE id = ? AND location = ?", (repair_id, location))
         conn.commit()
         return True
+
+
+# ---------------------------------------------------------------------------
+# Запити на замовлення запчастини (продавець -> адмін)
+# ---------------------------------------------------------------------------
+def create_part_request(location, link, note, requested_by):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "INSERT INTO part_requests (location, link, note, requested_by, requested_at) VALUES (?, ?, ?, ?, ?)",
+            (location, link, note, requested_by, now_str()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_pending_part_requests(location=None):
+    with closing(get_connection()) as conn:
+        if location:
+            cur = conn.execute(
+                "SELECT id, location, link, note, requested_at FROM part_requests "
+                "WHERE status = 'pending' AND location = ? ORDER BY requested_at",
+                (location,),
+            )
+        else:
+            cur = conn.execute(
+                "SELECT id, location, link, note, requested_at FROM part_requests "
+                "WHERE status = 'pending' ORDER BY requested_at"
+            )
+        return cur.fetchall()
+
+
+def mark_part_request_done(request_id, decided_by):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "UPDATE part_requests SET status = 'done', decided_at = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
+            (now_str(), decided_by, request_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------------

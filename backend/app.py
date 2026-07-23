@@ -130,24 +130,6 @@ def notify_admins_push(title, body, url=None):
             logging.getLogger(__name__).error(f"Помилка надсилання push адміну {sub_id}: {e}")
 
 
-def notify_parts_admin_push(title, body, url=None):
-    """Те саме, що notify_admins_push, але лише для адміна, позначеного
-    відповідальним за замовлення запчастин (get_parts_admin_push_subscriptions)."""
-    try:
-        subs = db.get_parts_admin_push_subscriptions()
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Не вдалось отримати підписки відповідального за запчастини: {e}")
-        return
-    for sub_id, endpoint, p256dh, auth in subs:
-        try:
-            subscription_info = {"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}}
-            result = push.send_push_notification(subscription_info, title, body, url)
-            if result is False:
-                db.remove_push_subscription(endpoint)
-        except Exception as e:
-            logging.getLogger(__name__).error(f"Помилка надсилання push відповідальному за запчастини {sub_id}: {e}")
-
-
 @app.route("/api/push/public-key", methods=["GET"])
 def push_public_key():
     return jsonify({"publicKey": vapid.get_public_key_b64()})
@@ -598,23 +580,8 @@ def remove_seller_route(user_id):
 @login_required
 @head_admin_required
 def list_admins_route():
-    rows = db.list_admins_with_parts_flag()
-    return jsonify([
-        {"id": r[0], "username": r[1], "role": r[2], "handles_parts_orders": bool(r[3])}
-        for r in rows
-    ])
-
-
-@app.route("/api/admins/parts-responsible", methods=["PUT"])
-@login_required
-@head_admin_required
-def set_parts_responsible_route():
-    data = request.get_json(force=True, silent=True) or {}
-    user_id = data.get("user_id")  # None -> зняти позначку з усіх
-    ok = db.set_parts_responsible_admin(user_id)
-    if not ok:
-        return jsonify({"error": "Такого адміна не знайдено"}), 404
-    return jsonify({"ok": True})
+    rows = db.list_users(role="admin")
+    return jsonify([{"id": r[0], "username": r[1]} for r in rows])
 
 
 @app.route("/api/admins", methods=["POST"])
@@ -783,6 +750,45 @@ def reject_repair_delete_request_route(request_id):
     return jsonify({"ok": ok})
 
 
+@app.route("/api/part-requests", methods=["POST"])
+@login_required
+def create_part_request_route():
+    location = seller_location(g.user)
+    if not location:
+        return jsonify({"error": "Ця дія доступна лише продавцю"}), 403
+    data = request.get_json(force=True)
+    link = (data.get("link") or "").strip()
+    if not link:
+        return jsonify({"error": "Вставте посилання на запчастину"}), 400
+    note = (data.get("note") or "").strip()
+    request_id = db.create_part_request(location, link, note, g.user["user_id"])
+    notify_admins_push(
+        "🔩 Запит на запчастину",
+        f"{g.user['username']} ({location}): {note or link}",
+    )
+    return jsonify({"ok": True, "request_id": request_id})
+
+
+@app.route("/api/part-requests/pending", methods=["GET"])
+@login_required
+@admin_required
+def pending_part_requests_route():
+    location = request.args.get("location")
+    rows = db.get_pending_part_requests(location)
+    return jsonify([
+        {"id": r[0], "location": r[1], "link": r[2], "note": r[3], "requested_at": r[4]}
+        for r in rows
+    ])
+
+
+@app.route("/api/part-requests/<int:request_id>/done", methods=["POST"])
+@login_required
+@admin_required
+def mark_part_request_done_route(request_id):
+    ok = db.mark_part_request_done(request_id, g.user["user_id"])
+    return jsonify({"ok": ok})
+
+
 @app.route("/api/repairs/report", methods=["GET"])
 @login_required
 def repairs_report_route():
@@ -837,40 +843,6 @@ def recount_apply_route():
         summary = "; ".join(f"{c['name']} {c['old']}→{c['new']}" for c in changes)
         notify_admins_push("🔄 Переоблік завершено", f"{location}: {summary}"[:200])
     return jsonify({"changes": changes})
-
-
-# ---------------------------------------------------------------------------
-# Запчастини: продавець 1 кнопкою повідомляє адміна, відповідального за
-# замовлення запчастин (позначається головним адміном у 👑 Адміни).
-# ---------------------------------------------------------------------------
-@app.route("/api/parts/order-request", methods=["POST"])
-@login_required
-def parts_order_request():
-    data = request.get_json(force=True, silent=True) or {}
-    site_name = (data.get("site_name") or "").strip()
-    site_url = (data.get("site_url") or "").strip()
-    note = (data.get("note") or "").strip() or None
-    if not site_name or not site_url:
-        return jsonify({"error": "Не вказано сайт для замовлення"}), 400
-
-    responsible = db.get_parts_responsible_admin()
-    if responsible is None:
-        return jsonify({
-            "error": "Ще не призначено відповідального за запчастини. "
-                     "Попросіть головного адміна зробити це в розділі «👑 Адміни»."
-        }), 409
-
-    location = seller_location(g.user) or data.get("location")
-    db.create_parts_order_request(site_name, site_url, note, location, g.user["user_id"])
-
-    body = f"{g.user['username']}"
-    if location:
-        body += f" ({location})"
-    body += f": {site_name}"
-    if note:
-        body += f" — {note}"
-    notify_parts_admin_push("🔗 Запит на замовлення запчастин", body[:200], url=site_url)
-    return jsonify({"ok": True, "sent_to": responsible[1]})
 
 
 # ---------------------------------------------------------------------------

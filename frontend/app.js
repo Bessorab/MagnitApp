@@ -591,27 +591,11 @@ async function renderAdminsView() {
     } catch (err) { toast(err.message, "error"); }
   });
   const admins = await api("/admins");
-  document.getElementById("adminsList").innerHTML = admins.map(a => `
-    <div class="item-row">
-      <div class="info">
-        <div class="name">${a.username}${a.role === "head_admin" ? " (головний)" : ""}</div>
-        <div class="meta">${a.handles_parts_orders ? "🔗 Відповідальний за запчастини" : ""}</div>
-      </div>
-      <button class="btn small ${a.handles_parts_orders ? "danger" : ""}" onclick="togglePartsResponsible(${a.id}, ${a.handles_parts_orders})">
-        ${a.handles_parts_orders ? "Зняти" : "Призначити за запчастини"}
-      </button>
-      ${a.role !== "head_admin" ? `<button class="btn small danger" onclick="removeAdmin(${a.id})">Видалити</button>` : ""}
-    </div>`
+  document.getElementById("adminsList").innerHTML = admins.map(a =>
+    `<div class="item-row"><div class="info"><div class="name">${a.username}</div></div>
+     <button class="btn small danger" onclick="removeAdmin(${a.id})">Видалити</button></div>`
   ).join("") || "<p>Немає доданих адмінів.</p>";
 }
-
-window.togglePartsResponsible = async (id, isCurrentlyResponsible) => {
-  try {
-    await api("/admins/parts-responsible", { method: "PUT", json: { user_id: isCurrentlyResponsible ? null : id } });
-    toast(isCurrentlyResponsible ? "Знято позначку" : "✅ Призначено відповідальним за запчастини");
-    renderAdminsView();
-  } catch (err) { toast(err.message, "error"); }
-};
 
 window.removeAdmin = async (id) => {
   if (!confirm("Видалити цього адміна?")) return;
@@ -878,9 +862,10 @@ async function renderRequestsView() {
 async function loadRequestsList() {
   const listEl = document.getElementById("requestsList");
   try {
-    const [qtyRows, repairRows] = await Promise.all([
+    const [qtyRows, repairRows, partRows] = await Promise.all([
       api("/qty-requests/pending"),
       api("/repair-delete-requests/pending"),
+      api("/part-requests/pending"),
     ]);
     let html = "";
     if (qtyRows.length) {
@@ -904,9 +889,25 @@ async function loadRequestsList() {
           </div>
         </div>`).join("");
     }
+    if (partRows.length) {
+      html += `<h3>🔩 Запчастини на замовлення</h3>` + partRows.map(r => `
+        <div class="card">
+          <div class="name">${r.location}${r.note ? " — " + r.note : ""}</div>
+          <div class="meta"><a href="${r.link}" style="color:#5b9bd5;">${r.link}</a></div>
+          <button class="btn" style="margin-top:8px;" onclick="markPartRequestDone(${r.id})">✅ Замовлено / оброблено</button>
+        </div>`).join("");
+    }
     listEl.innerHTML = html || "<p>Немає запитів, що очікують підтвердження.</p>";
   } catch (err) { toast(err.message, "error"); }
 }
+
+window.markPartRequestDone = async (id) => {
+  try {
+    await api(`/part-requests/${id}/done`, { method: "POST" });
+    toast("✅ Позначено як оброблено");
+    loadRequestsList();
+  } catch (err) { toast(err.message, "error"); }
+};
 
 window.decideRepairDeleteRequest = async (id, approve) => {
   try {
@@ -964,25 +965,27 @@ const PARTS_SITES = [
 
 function renderPartsView() {
   const view = document.getElementById("view");
-  view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>` +
-    PARTS_SITES.map((s, i) => `
-      <div class="item-row">
-        <div class="info">
-          <a href="${s.url}" target="_blank" rel="noopener" style="color:inherit;">${s.name} ↗</a>
-        </div>
-        <button class="btn small" data-parts-order="${i}">📩 Замовити</button>
-      </div>`
-    ).join("");
-
-  view.querySelectorAll("[data-parts-order]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const site = PARTS_SITES[Number(btn.dataset.partsOrder)];
-      const note = prompt(`Що саме замовити з ${site.name}? (необов'язково)`) || "";
-      try {
-        await api("/parts/order-request", { method: "POST", json: { site_name: site.name, site_url: site.url, note } });
-        toast(`✅ Надіслано відповідальному за запчастини`);
-      } catch (err) { toast(err.message, "error"); }
-    });
+  view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
+    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Після переходу на сайт натисніть кнопку «Назад» на телефоні, щоб швидко повернутись у застосунок.</p>` +
+    PARTS_SITES.map(s =>
+      `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+    ).join("") + `
+    <div class="card" style="margin-top:14px;">
+      <h3>📨 Надіслати посилання на запчастину адміну</h3>
+      <p style="color:#93a3b8;font-size:13px;">Знайшли потрібну деталь на сайті? Скопіюйте посилання на неї (адресний рядок браузера) і вставте сюди.</p>
+      <label>Посилання на запчастину</label><input id="partLink" placeholder="https://...">
+      <label>Коментар (необов'язково)</label><input id="partNote" placeholder="Наприклад: екран для iPhone 12">
+      <button class="btn" id="partSendBtn">Надіслати адміну</button>
+    </div>`;
+  document.getElementById("partSendBtn").addEventListener("click", async () => {
+    const link = document.getElementById("partLink").value.trim();
+    const note = document.getElementById("partNote").value.trim();
+    if (!link) { toast("Вставте посилання на запчастину", "error"); return; }
+    try {
+      await api("/part-requests", { method: "POST", json: { link, note } });
+      toast("📨 Надіслано адміну");
+      renderPartsView();
+    } catch (err) { toast(err.message, "error"); }
   });
 }
 
