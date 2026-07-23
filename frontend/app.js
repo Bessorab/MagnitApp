@@ -29,6 +29,40 @@ async function api(path, options) {
   return data;
 }
 
+// ----------------------------------------------------------------------------
+// Стиснення фото ПРЯМО В ТЕЛЕФОНІ перед відправкою - фото з камери зазвичай
+// 3000-4000px і кілька мегабайт, що дуже повільно і завантажується, і
+// обробляється на слабкому сервері. Зменшуємо до розумного розміру заздалегідь.
+// ----------------------------------------------------------------------------
+function resizePhotoBeforeUpload(file, maxDimension = 1280, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxDimension || height > maxDimension) {
+        if (width >= height) {
+          height = Math.round(height * (maxDimension / width));
+          width = maxDimension;
+        } else {
+          width = Math.round(width * (maxDimension / height));
+          height = maxDimension;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      canvas.toBlob(
+        (blob) => resolve(blob ? new File([blob], file.name || "photo.jpg", { type: "image/jpeg" }) : file),
+        "image/jpeg", quality
+      );
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); }; // якщо щось пішло не так - шлемо як є
+    img.src = url;
+  });
+}
+
 function toast(msg, kind) {
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
@@ -187,9 +221,11 @@ async function handleSalePhoto(e) {
   const file = e.target.files[0];
   if (!file) return;
   const resultEl = document.getElementById("saleResult");
+  resultEl.innerHTML = "<p>Стискаю фото...</p>";
+  const resized = await resizePhotoBeforeUpload(file);
   resultEl.innerHTML = "<p>Аналізую фото...</p>";
   const form = new FormData();
-  form.append("photo", file);
+  form.append("photo", resized);
   try {
     const data = await api("/items/identify", { method: "POST", form });
     if (data.status === "exact_match") {
@@ -347,9 +383,11 @@ async function handleSupplyPhoto(e) {
   const file = e.target.files[0];
   if (!file) return;
   const resultEl = document.getElementById("supplyResult");
+  resultEl.innerHTML = "<p>Стискаю фото...</p>";
+  const resized = await resizePhotoBeforeUpload(file);
   resultEl.innerHTML = "<p>Аналізую фото...</p>";
   const form = new FormData();
-  form.append("photo", file);
+  form.append("photo", resized);
   try {
     const data = await api("/items/identify", { method: "POST", form });
     if (data.status === "exact_match" || (data.status === "possible_matches" && data.matches.length)) {
@@ -393,7 +431,9 @@ function renderRepairNewForm() {
     </div>`;
   document.getElementById("repairIntakeDate").valueAsDate = new Date();
   let selectedPhoto = null;
-  document.getElementById("repairPhotoInput").addEventListener("change", (e) => { selectedPhoto = e.target.files[0]; });
+  document.getElementById("repairPhotoInput").addEventListener("change", async (e) => {
+    selectedPhoto = e.target.files[0] ? await resizePhotoBeforeUpload(e.target.files[0]) : null;
+  });
   document.getElementById("repairSaveBtn").addEventListener("click", async () => {
     const form = new FormData();
     if (selectedPhoto) form.append("photo", selectedPhoto);

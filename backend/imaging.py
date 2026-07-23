@@ -20,17 +20,29 @@ except ImportError:
 
 MATCH_THRESHOLD = 20
 MAX_MATCH_RESULTS = 3
+MAX_SAFE_DIMENSION = 1600  # захисне обмеження - навіть якщо фронтенд чомусь не стиснув фото
+
+
+def _cap_size(img):
+    """Захисне зменшення - фронтенд уже стискає фото перед відправкою, але
+    про всяк випадок (старий кеш, інший клієнт) обмежуємо тут теж, щоб не
+    навантажувати слабкий сервер обробкою фото в кілька мегапікселів."""
+    width, height = img.size
+    if max(width, height) > MAX_SAFE_DIMENSION:
+        scale = MAX_SAFE_DIMENSION / max(width, height)
+        img = img.resize((int(width * scale), int(height * scale)), Image.LANCZOS)
+    return img
 
 
 def compute_image_hash(image_bytes: bytes) -> str:
-    image = Image.open(io.BytesIO(image_bytes))
+    image = _cap_size(Image.open(io.BytesIO(image_bytes)))
     return str(imagehash.phash(image))
 
 
 def detect_barcodes(image_bytes: bytes):
     """Намагається розпізнати штрихкод кількома способами обробки фото -
     оригінал, відтінки сірого, підвищений контраст, збільшений розмір."""
-    img = Image.open(io.BytesIO(image_bytes))
+    img = _cap_size(Image.open(io.BytesIO(image_bytes)))
 
     candidates = [img]
     try:
