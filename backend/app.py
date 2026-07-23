@@ -92,6 +92,18 @@ def admin_required(f):
     return wrapper
 
 
+def parts_or_admin_required(f):
+    """Доступно звичайним адмінам, головному адміну, І обмеженому
+    'адміну запчастин' (parts_admin) - для двох конкретних функцій:
+    підтвердження запчастин і контроль видалення квитанцій ремонту."""
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        if g.user["role"] not in ("admin", "head_admin", "parts_admin"):
+            return jsonify({"error": "Доступно лише адміну"}), 403
+        return f(*args, **kwargs)
+    return wrapper
+
+
 def head_admin_required(f):
     @functools.wraps(f)
     def wrapper(*args, **kwargs):
@@ -580,8 +592,12 @@ def remove_seller_route(user_id):
 @login_required
 @head_admin_required
 def list_admins_route():
-    rows = db.list_users(role="admin")
-    return jsonify([{"id": r[0], "username": r[1]} for r in rows])
+    admins = db.list_users(role="admin")
+    parts_admins = db.list_users(role="parts_admin")
+    return jsonify(
+        [{"id": r[0], "username": r[1], "role": "admin"} for r in admins] +
+        [{"id": r[0], "username": r[1], "role": "parts_admin"} for r in parts_admins]
+    )
 
 
 @app.route("/api/admins", methods=["POST"])
@@ -589,7 +605,10 @@ def list_admins_route():
 @head_admin_required
 def add_admin_route():
     data = request.get_json(force=True)
-    ok = db.add_user(data["username"], data["password"], "admin", None)
+    role = data.get("role", "admin")
+    if role not in ("admin", "parts_admin"):
+        return jsonify({"error": "Невірна роль"}), 400
+    ok = db.add_user(data["username"], data["password"], role, None)
     if not ok:
         return jsonify({"error": "Такий логін вже існує"}), 409
     return jsonify({"ok": True})
@@ -724,7 +743,7 @@ def delete_repair_route(repair_id):
 
 @app.route("/api/repair-delete-requests/pending", methods=["GET"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def pending_repair_delete_requests_route():
     location = request.args.get("location")
     rows = db.get_pending_repair_delete_requests(location)
@@ -736,7 +755,7 @@ def pending_repair_delete_requests_route():
 
 @app.route("/api/repair-delete-requests/<int:request_id>/approve", methods=["POST"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def approve_repair_delete_request_route(request_id):
     ok = db.decide_repair_delete_request(request_id, True, g.user["user_id"])
     return jsonify({"ok": ok})
@@ -744,7 +763,7 @@ def approve_repair_delete_request_route(request_id):
 
 @app.route("/api/repair-delete-requests/<int:request_id>/reject", methods=["POST"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def reject_repair_delete_request_route(request_id):
     ok = db.decide_repair_delete_request(request_id, False, g.user["user_id"])
     return jsonify({"ok": ok})
@@ -771,7 +790,7 @@ def create_part_request_route():
 
 @app.route("/api/part-requests/pending", methods=["GET"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def pending_part_requests_route():
     location = request.args.get("location")
     rows = db.get_pending_part_requests(location)
@@ -783,7 +802,7 @@ def pending_part_requests_route():
 
 @app.route("/api/part-requests/<int:request_id>/done", methods=["POST"])
 @login_required
-@admin_required
+@parts_or_admin_required
 def mark_part_request_done_route(request_id):
     ok = db.mark_part_request_done(request_id, g.user["user_id"])
     return jsonify({"ok": ok})

@@ -65,12 +65,34 @@ def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('head_admin', 'admin', 'seller')),
+                role TEXT NOT NULL CHECK(role IN ('head_admin', 'admin', 'parts_admin', 'seller')),
                 location TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        # Міграція для баз, створених до появи ролі 'parts_admin': стара
+        # схема забороняла це значення через CHECK - перевіряємо тестовою
+        # вставкою і, якщо стара схема, перестворюємо таблицю зі збереженням даних.
+        try:
+            conn.execute("INSERT INTO users (username, password_hash, role) VALUES ('__migration_test__', 'x', 'parts_admin')")
+            conn.execute("DELETE FROM users WHERE username = '__migration_test__'")
+        except Exception:
+            conn.execute("ALTER TABLE users RENAME TO users_old")
+            conn.execute(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('head_admin', 'admin', 'parts_admin', 'seller')),
+                    location TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute("INSERT INTO users SELECT * FROM users_old")
+            conn.execute("DROP TABLE users_old")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS items (

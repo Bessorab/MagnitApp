@@ -134,5 +134,38 @@ nav.bottomnav button {
 }
 nav.bottomnav button.active { color: #2563eb; font-weight: 600; }
 
+.fab {
+  position: fixed;
+  right: 16px;
+  bottom: 66px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: white;
+  font-size: 24px;
+  border: none;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  z-index: 60;
+  cursor: pointer;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 200;
+}
+.modal-sheet {
+  background: #1a2432;
+  border-radius: 16px 16px 0 0;
+  padding: 18px;
+  width: 100%;
+  max-width: 480px;
+}
+
 #loginScreen { display: flex; flex-direction: column; justify-content: center; min-height: 90vh; }
 #loginScreen h1 { text-align: center; margin-bottom: 24px; }

@@ -135,6 +135,7 @@ const ADMIN_TABS = [
 let currentTab = null;
 
 function tabsForRole() {
+  if (ME.role === "parts_admin") return [{ id: "requests", label: "🔔 Запити" }];
   const tabs = ME.role === "seller" ? SELLER_TABS.slice() : ADMIN_TABS.slice();
   if (ME.role === "head_admin") tabs.push({ id: "admins", label: "👑 Адміни" });
   return tabs;
@@ -184,11 +185,13 @@ function showMainApp() {
     testBtn.innerHTML = ` <button class="btn small secondary" onclick="sendTestPush()" style="margin-left:6px;">🔔 Тест сповіщення</button>`;
     document.getElementById("meLabel").appendChild(testBtn);
   }
-  goTab(ME.role === "seller" ? "sale" : "sellers");
+  document.getElementById("partsFab").classList.toggle("hidden", ME.role !== "seller");
+  const defaultTab = ME.role === "seller" ? "sale" : (ME.role === "parts_admin" ? "requests" : "sellers");
+  goTab(defaultTab);
 }
 
 function roleLabel(role) {
-  return { seller: "продавець", admin: "адмін", head_admin: "головний адмін" }[role] || role;
+  return { seller: "продавець", admin: "адмін", head_admin: "головний адмін", parts_admin: "адмін запчастин" }[role] || role;
 }
 
 // ----------------------------------------------------------------------------
@@ -580,19 +583,31 @@ async function renderAdminsView() {
     <div class="card">
       <label>Логін</label><input id="newAdminLogin">
       <label>Пароль</label><input id="newAdminPass" type="password">
+      <label>Роль</label>
+      <select id="newAdminRole">
+        <option value="admin">Повний адмін</option>
+        <option value="parts_admin">Адмін запчастин (лише запити)</option>
+      </select>
       <button class="btn" id="addAdminBtn">➕ Додати адміна</button>
     </div>
     <div id="adminsList">Завантаження...</div>`;
   document.getElementById("addAdminBtn").addEventListener("click", async () => {
     try {
-      await api("/admins", { method: "POST", json: { username: document.getElementById("newAdminLogin").value, password: document.getElementById("newAdminPass").value } });
+      await api("/admins", {
+        method: "POST",
+        json: {
+          username: document.getElementById("newAdminLogin").value,
+          password: document.getElementById("newAdminPass").value,
+          role: document.getElementById("newAdminRole").value,
+        },
+      });
       toast("✅ Адміна додано");
       renderAdminsView();
     } catch (err) { toast(err.message, "error"); }
   });
   const admins = await api("/admins");
   document.getElementById("adminsList").innerHTML = admins.map(a =>
-    `<div class="item-row"><div class="info"><div class="name">${a.username}</div></div>
+    `<div class="item-row"><div class="info"><div class="name">${a.username}</div><div class="meta">${roleLabel(a.role)}</div></div>
      <button class="btn small danger" onclick="removeAdmin(${a.id})">Видалити</button></div>`
   ).join("") || "<p>Немає доданих адмінів.</p>";
 }
@@ -862,8 +877,9 @@ async function renderRequestsView() {
 async function loadRequestsList() {
   const listEl = document.getElementById("requestsList");
   try {
+    const canSeeQty = ME.role === "admin" || ME.role === "head_admin";
     const [qtyRows, repairRows, partRows] = await Promise.all([
-      api("/qty-requests/pending"),
+      canSeeQty ? api("/qty-requests/pending") : Promise.resolve([]),
       api("/repair-delete-requests/pending"),
       api("/part-requests/pending"),
     ]);
@@ -963,30 +979,50 @@ const PARTS_SITES = [
   { name: "GSM Server", url: "https://gsmserver.com.ua/uk/" },
 ];
 
-function renderPartsView() {
-  const view = document.getElementById("view");
-  view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
-    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Після переходу на сайт натисніть кнопку «Назад» на телефоні, щоб швидко повернутись у застосунок.</p>` +
-    PARTS_SITES.map(s =>
-      `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
-    ).join("") + `
-    <div class="card" style="margin-top:14px;">
-      <h3>📨 Надіслати посилання на запчастину адміну</h3>
-      <p style="color:#93a3b8;font-size:13px;">Знайшли потрібну деталь на сайті? Скопіюйте посилання на неї (адресний рядок браузера) і вставте сюди.</p>
-      <label>Посилання на запчастину</label><input id="partLink" placeholder="https://...">
-      <label>Коментар (необов'язково)</label><input id="partNote" placeholder="Наприклад: екран для iPhone 12">
-      <button class="btn" id="partSendBtn">Надіслати адміну</button>
+window.openQuickPartModal = () => {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "quickPartOverlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <h3>🔩 Надіслати посилання на запчастину</h3>
+      <p style="color:#93a3b8;font-size:13px;">Вставте скопійоване посилання на потрібну деталь.</p>
+      <label>Посилання</label><input id="quickPartLink" placeholder="https://...">
+      <label>Коментар (необов'язково)</label><input id="quickPartNote" placeholder="Наприклад: екран для iPhone 12">
+      <div class="grid2">
+        <button class="btn secondary" id="quickPartCancel">Скасувати</button>
+        <button class="btn" id="quickPartSend">Надіслати адміну</button>
+      </div>
     </div>`;
-  document.getElementById("partSendBtn").addEventListener("click", async () => {
-    const link = document.getElementById("partLink").value.trim();
-    const note = document.getElementById("partNote").value.trim();
+  document.body.appendChild(overlay);
+  document.getElementById("quickPartLink").focus();
+  document.getElementById("quickPartCancel").addEventListener("click", closeQuickPartModal);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeQuickPartModal(); });
+  document.getElementById("quickPartSend").addEventListener("click", async () => {
+    const link = document.getElementById("quickPartLink").value.trim();
+    const note = document.getElementById("quickPartNote").value.trim();
     if (!link) { toast("Вставте посилання на запчастину", "error"); return; }
     try {
       await api("/part-requests", { method: "POST", json: { link, note } });
       toast("📨 Надіслано адміну");
-      renderPartsView();
+      closeQuickPartModal();
     } catch (err) { toast(err.message, "error"); }
   });
+};
+
+function closeQuickPartModal() {
+  const overlay = document.getElementById("quickPartOverlay");
+  if (overlay) overlay.remove();
+}
+
+function renderPartsView() {
+  const view = document.getElementById("view");
+  view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
+    <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Після переходу на сайт натисніть кнопку «Назад» на телефоні, щоб швидко повернутись у застосунок - тоді натисніть помаранчеву кнопку 🔩 внизу справа, щоб надіслати посилання адміну з будь-якого екрана.</p>` +
+    PARTS_SITES.map(s =>
+      `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
+    ).join("") + `
+    <button class="btn" style="margin-top:14px;" onclick="openQuickPartModal()">🔩 Надіслати посилання на запчастину адміну</button>`;
 }
 
 // ----------------------------------------------------------------------------
