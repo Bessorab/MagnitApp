@@ -109,12 +109,23 @@ def init_db():
                 receipt_number TEXT NOT NULL,
                 intake_date TEXT NOT NULL,
                 completion_date TEXT,
+                cost REAL,
+                payment_method TEXT,
                 location TEXT NOT NULL,
                 added_by INTEGER,
                 added_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        # Міграція для баз, створених до появи суми ремонту/виду оплати.
+        try:
+            conn.execute("ALTER TABLE repairs ADD COLUMN cost REAL")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE repairs ADD COLUMN payment_method TEXT")
+        except Exception:
+            pass
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS repair_baselines (
@@ -479,9 +490,12 @@ def get_pending_repairs(location):
         return cur.fetchall()
 
 
-def mark_repair_completed(repair_id, completion_date):
+def mark_repair_completed(repair_id, completion_date, cost=None, payment_method=None):
     with closing(get_connection()) as conn:
-        conn.execute("UPDATE repairs SET completion_date = ? WHERE id = ?", (completion_date, repair_id))
+        conn.execute(
+            "UPDATE repairs SET completion_date = ?, cost = ?, payment_method = ? WHERE id = ?",
+            (completion_date, cost, payment_method, repair_id),
+        )
         conn.commit()
 
 
@@ -505,7 +519,7 @@ def get_repair_by_id(repair_id):
 def get_repairs_by_period(location, start_date, end_date):
     with closing(get_connection()) as conn:
         cur = conn.execute(
-            "SELECT id, photo_path, receipt_number, intake_date, completion_date FROM repairs "
+            "SELECT id, photo_path, receipt_number, intake_date, completion_date, cost, payment_method FROM repairs "
             "WHERE location = ? AND date(intake_date) >= date(?) AND date(intake_date) <= date(?) "
             "ORDER BY date(intake_date)",
             (location, start_date, end_date),

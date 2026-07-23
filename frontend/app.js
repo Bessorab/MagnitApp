@@ -347,8 +347,16 @@ async function loadItemsList() {
 window.promptQtyChange = async (itemId, currentQty) => {
   const newQty = prompt("Нова кількість:", currentQty);
   if (newQty === null) return;
+
+  let reason = "";
+  if (ME.role === "seller") {
+    reason = prompt("Причина зміни кількості (обов'язково, наприклад: пересорт, псування, повернення):", "");
+    if (reason === null) return;
+    if (!reason.trim()) { toast("Потрібно вказати причину зміни кількості", "error"); return; }
+  }
+
   try {
-    const res = await api(`/items/${itemId}`, { method: "PATCH", json: { quantity: parseInt(newQty, 10), reason: "" } });
+    const res = await api(`/items/${itemId}`, { method: "PATCH", json: { quantity: parseInt(newQty, 10), reason } });
     if (res.direct) {
       toast("✅ Кількість оновлено");
     } else {
@@ -473,8 +481,20 @@ async function renderRepairIssueList() {
 window.issueRepair = async (repairId) => {
   const date = prompt("Дата видачі (РІК-МІСЯЦЬ-ДЕНЬ):", new Date().toISOString().slice(0, 10));
   if (date === null) return;
+
+  const cost = prompt("Сума ремонту (грн):", "");
+  if (cost === null) return;
+  if (cost.trim() && isNaN(parseFloat(cost))) { toast("Сума має бути числом", "error"); return; }
+
+  let paymentMethod = prompt("Спосіб оплати - введіть «готівка» або «безготівка»:", "готівка");
+  if (paymentMethod === null) return;
+  paymentMethod = paymentMethod.trim().toLowerCase().startsWith("безгот") ? "Безготівка" : "Готівка";
+
   try {
-    await api(`/repairs/${repairId}/complete`, { method: "POST", json: { completion_date: date } });
+    await api(`/repairs/${repairId}/complete`, {
+      method: "POST",
+      json: { completion_date: date, cost: cost.trim() ? parseFloat(cost) : null, payment_method: paymentMethod },
+    });
     toast("✅ Видано клієнту");
     const sellerArea = document.getElementById("repairArea");
     const adminPendingBtn = document.getElementById("repPendingBtn");
@@ -793,13 +813,15 @@ function renderRepairRows(rows, pendingOnly) {
     const status = r.completion_date
       ? `<span class="badge done">видано ${r.completion_date}</span>`
       : `<span class="badge pending">в ремонті</span>`;
+    const costLine = (!isPending && r.cost != null)
+      ? `<div class="meta">Сума: ${r.cost} грн | ${r.payment_method || "?"}</div>` : "";
     const actions = isPending
       ? `<div class="grid2" style="margin-top:6px;">
            <button class="btn small" onclick="issueRepair(${r.id})">✅ Видати</button>
            <button class="btn small danger" onclick="deleteRepairAdmin(${r.id})">🗑️ Видалити</button>
          </div>`
       : "";
-    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div></div>${status}</div>${actions}</div>`;
+    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div>${costLine}</div>${status}</div>${actions}</div>`;
   }).join("");
 }
 

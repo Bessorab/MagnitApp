@@ -294,11 +294,13 @@ def update_item(item_id):
         return jsonify({"ok": True, "direct": True})
 
     # Продавець - створюємо запит, який має підтвердити адмін (як у боті).
+    reason = (data.get("reason") or "").strip()
+    if not reason:
+        return jsonify({"error": "Потрібно вказати причину зміни кількості"}), 400
     item = db.get_item_by_id(location, item_id)
     if item is None:
         return jsonify({"error": "Товар не знайдено"}), 404
     old_quantity = item[5]
-    reason = data.get("reason", "")
     request_id = db.create_qty_request(item_id, location, old_quantity, new_quantity, reason, g.user["user_id"])
 
     notify_admins_push(
@@ -624,7 +626,10 @@ def pending_repairs_route():
 @login_required
 def complete_repair_route(repair_id):
     data = request.get_json(force=True)
-    db.mark_repair_completed(repair_id, data["completion_date"])
+    cost = data.get("cost")
+    cost = float(cost) if cost not in (None, "") else None
+    payment_method = data.get("payment_method")
+    db.mark_repair_completed(repair_id, data["completion_date"], cost, payment_method)
     return jsonify({"ok": True})
 
 
@@ -688,7 +693,7 @@ def repairs_report_route():
     return jsonify([
         {
             "id": r[0], "photo_url": photo_url(r[1]), "receipt_number": r[2],
-            "intake_date": r[3], "completion_date": r[4],
+            "intake_date": r[3], "completion_date": r[4], "cost": r[5], "payment_method": r[6],
         }
         for r in rows
     ])

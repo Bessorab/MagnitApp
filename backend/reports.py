@@ -56,16 +56,23 @@ def build_sales_excel(rows, include_location_column=True):
 
 
 def build_repairs_excel(rows):
-    """rows: список кортежів (id, photo_path, receipt_number, intake_date, completion_date)."""
+    """rows: список кортежів (id, photo_path, receipt_number, intake_date, completion_date, cost, payment_method)."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Ремонти"
-    ws.append(["Номер квитанції", "Дата прийняття", "Дата видачі", "Статус"])
+    ws.append(["Номер квитанції", "Дата прийняття", "Дата видачі", "Статус", "Сума", "Оплата"])
     _style_header(ws)
 
-    for repair_id, photo_path, receipt_number, intake_date, completion_date in rows:
+    total = 0.0
+    for repair_id, photo_path, receipt_number, intake_date, completion_date, cost, payment_method in rows:
         status = "Видано" if completion_date else "В ремонті"
-        ws.append([receipt_number, intake_date, completion_date or "", status])
+        ws.append([receipt_number, intake_date, completion_date or "", status, cost or "", payment_method or ""])
+        total += cost or 0
+
+    ws.append([])
+    ws.append(["Разом:", "", "", "", total, ""])
+    for cell in ws[ws.max_row]:
+        cell.font = Font(bold=True)
 
     for col in ws.columns:
         max_len = max((len(str(c.value)) for c in col if c.value is not None), default=10)
