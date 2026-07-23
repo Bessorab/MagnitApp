@@ -209,9 +209,47 @@ def init_db():
                 location TEXT NOT NULL,
                 link TEXT NOT NULL,
                 note TEXT,
+                repair_id INTEGER,
                 requested_by INTEGER,
                 status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'done')),
                 requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                decided_at TEXT,
+                decided_by INTEGER
+            )
+            """
+        )
+        try:
+            conn.execute("ALTER TABLE part_requests ADD COLUMN repair_id INTEGER")
+        except Exception:
+            pass
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS approved_devices (
+                user_id INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                approved_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, device_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS login_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                device_info TEXT,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 decided_at TEXT,
                 decided_by INTEGER
             )
@@ -254,6 +292,21 @@ def get_user_by_id(user_id):
             "SELECT id, username, role, location FROM users WHERE id = ?", (user_id,)
         )
         return cur.fetchone()
+
+
+def get_password_hash(user_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def change_password(user_id, new_password):
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user_id)
+        )
+        conn.commit()
 
 
 def add_user(username, password, role, location=None):
@@ -707,29 +760,32 @@ def decide_repair_delete_request(request_id, approve: bool, decided_by):
 # ---------------------------------------------------------------------------
 # Запити на замовлення запчастини (продавець -> адмін)
 # ---------------------------------------------------------------------------
-def create_part_request(location, link, note, requested_by):
+def create_part_request(location, link, note, requested_by, repair_id=None):
     with closing(get_connection()) as conn:
         cur = conn.execute(
-            "INSERT INTO part_requests (location, link, note, requested_by, requested_at) VALUES (?, ?, ?, ?, ?)",
-            (location, link, note, requested_by, now_str()),
+            "INSERT INTO part_requests (location, link, note, requested_by, repair_id, requested_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (location, link, note, requested_by, repair_id, now_str()),
         )
         conn.commit()
         return cur.lastrowid
+
+
+_PART_REQUEST_SELECT = (
+    "SELECT pr.id, pr.location, pr.link, pr.note, pr.requested_by, pr.status, pr.requested_at, "
+    "pr.repair_id, repairs.receipt_number FROM part_requests pr "
+    "LEFT JOIN repairs ON repairs.id = pr.repair_id"
+)
 
 
 def get_pending_part_requests(location=None):
     with closing(get_connection()) as conn:
         if location:
             cur = conn.execute(
-                "SELECT id, location, link, note, requested_at FROM part_requests "
-                "WHERE status = 'pending' AND location = ? ORDER BY requested_at",
+                _PART_REQUEST_SELECT + " WHERE pr.status = 'pending' AND pr.location = ? ORDER BY pr.requested_at",
                 (location,),
             )
         else:
-            cur = conn.execute(
-                "SELECT id, location, link, note, requested_at FROM part_requests "
-                "WHERE status = 'pending' ORDER BY requested_at"
-            )
+            cur = conn.execute(_PART_REQUEST_SELECT + " WHERE pr.status = 'pending' ORDER BY pr.requested_at")
         return cur.fetchall()
 
 
@@ -741,6 +797,180 @@ def mark_part_request_done(request_id, decided_by):
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+def get_all_part_requests(location=None):
+    """Уся історія запитів (будь-який статус) - для головного адміна/адміна,
+    щоб бачити, редагувати й видаляти на всіх точках."""
+    with closing(get_connection()) as conn:
+        if location:
+            cur = conn.execute(_PART_REQUEST_SELECT + " WHERE pr.location = ? ORDER BY pr.requested_at DESC", (location,))
+        else:
+            cur = conn.execute(_PART_REQUEST_SELECT + " ORDER BY pr.requested_at DESC")
+        return cur.fetchall()
+
+
+def get_part_requests_by_user(user_id):
+    """Власна історія запитів продавця (будь-який статус) - щоб міг бачити й
+    видаляти лише свої."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            _PART_REQUEST_SELECT + " WHERE pr.requested_by = ? ORDER BY pr.requested_at DESC",
+            (user_id,),
+        )
+        return cur.fetchall()
+
+
+def get_part_request_by_id(request_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT id, location, link, note, requested_by, status, repair_id FROM part_requests WHERE id = ?",
+            (request_id,),
+        )
+        return cur.fetchone()
+
+
+def update_part_request(request_id, link, note, repair_id=None):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "UPDATE part_requests SET link = ?, note = ?, repair_id = ? WHERE id = ?",
+            (link, note, repair_id, request_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_part_request(request_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute("DELETE FROM part_requests WHERE id = ?", (request_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Налаштування (термін зберігання посилань на запчастини тощо)
+# ---------------------------------------------------------------------------
+PART_RETENTION_SETTING_KEY = "part_requests_retention_days"
+
+
+def get_setting(key, default=None):
+    with closing(get_connection()) as conn:
+        cur = conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+
+
+def set_setting(key, value):
+    with closing(get_connection()) as conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        conn.commit()
+
+
+def cleanup_old_part_requests():
+    """Видаляє посилання на запчастини зі статусом 'done', старіші за термін,
+    який задав головний адмін. Викликається "ліниво" - перед показом списків,
+    без потреби в окремому фоновому процесі."""
+    retention_days = get_setting(PART_RETENTION_SETTING_KEY)
+    if not retention_days:
+        return 0
+    try:
+        days = int(retention_days)
+    except ValueError:
+        return 0
+    if days <= 0:
+        return 0
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "DELETE FROM part_requests WHERE status = 'done' AND "
+            "datetime(COALESCE(decided_at, requested_at)) < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Підтвердження нового пристрою (замість "вибивання" попереднього сеансу)
+# ---------------------------------------------------------------------------
+def is_device_approved(user_id, device_id):
+    """True, якщо цей пристрій уже підтверджено для цього користувача, АБО
+    якщо в користувача взагалі ще немає жодного підтвердженого пристрою
+    (перший вхід після створення акаунту довіряємо автоматично)."""
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT 1 FROM approved_devices WHERE user_id = ? AND device_id = ?", (user_id, device_id)
+        )
+        if cur.fetchone():
+            return True
+        cur = conn.execute("SELECT COUNT(*) FROM approved_devices WHERE user_id = ?", (user_id,))
+        has_any = cur.fetchone()[0] > 0
+        if not has_any:
+            conn.execute(
+                "INSERT INTO approved_devices (user_id, device_id, approved_at) VALUES (?, ?, ?)",
+                (user_id, device_id, now_str()),
+            )
+            conn.commit()
+            return True
+        return False
+
+
+def get_pending_login_request(user_id, device_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT id FROM login_requests WHERE user_id = ? AND device_id = ? AND status = 'pending'",
+            (user_id, device_id),
+        )
+        return cur.fetchone()
+
+
+def create_login_request(user_id, username, device_id, device_info):
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "INSERT INTO login_requests (user_id, username, device_id, device_info, created_at) VALUES (?, ?, ?, ?, ?)",
+            (user_id, username, device_id, device_info, now_str()),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_login_request_status(request_id):
+    with closing(get_connection()) as conn:
+        cur = conn.execute("SELECT status, user_id, device_id FROM login_requests WHERE id = ?", (request_id,))
+        return cur.fetchone()
+
+
+def get_pending_login_requests():
+    with closing(get_connection()) as conn:
+        cur = conn.execute(
+            "SELECT id, username, device_info, created_at FROM login_requests "
+            "WHERE status = 'pending' ORDER BY created_at"
+        )
+        return cur.fetchall()
+
+
+def decide_login_request(request_id, approve: bool, decided_by):
+    with closing(get_connection()) as conn:
+        row = conn.execute(
+            "SELECT user_id, device_id, status FROM login_requests WHERE id = ?", (request_id,)
+        ).fetchone()
+        if row is None or row[2] != "pending":
+            return False
+        user_id, device_id, _ = row
+        status = "approved" if approve else "rejected"
+        conn.execute(
+            "UPDATE login_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
+            (status, now_str(), decided_by, request_id),
+        )
+        if approve:
+            conn.execute(
+                "INSERT OR IGNORE INTO approved_devices (user_id, device_id, approved_at) VALUES (?, ?, ?)",
+                (user_id, device_id, now_str()),
+            )
+        conn.commit()
+        return True
 
 
 # ---------------------------------------------------------------------------

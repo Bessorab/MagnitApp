@@ -83,13 +83,41 @@ function toast(msg, kind) {
 // ----------------------------------------------------------------------------
 // Логін / вихід
 // ----------------------------------------------------------------------------
+function getDeviceId() {
+  let id = localStorage.getItem("magnit_device_id");
+  if (!id) {
+    id = "dev-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+    localStorage.setItem("magnit_device_id", id);
+  }
+  return id;
+}
+
 async function doLogin(username, password) {
-  const data = await api("/login", { method: "POST", json: { username, password } });
+  const data = await api("/login", {
+    method: "POST",
+    json: { username, password, device_id: getDeviceId(), device_info: navigator.userAgent },
+  });
+  if (data.status === "pending") {
+    showLoginPendingMessage();
+    return;
+  }
   TOKEN = data.token;
   localStorage.setItem("magnit_token", TOKEN);
   ME = data;
   showMainApp();
   setupPushNotifications(false);
+}
+
+function showLoginPendingMessage() {
+  const screen = document.getElementById("loginScreen");
+  screen.innerHTML = `
+    <h1>🔧 MagnitApp</h1>
+    <div class="card">
+      <p>🔐 Це новий пристрій для вашого акаунту. Надіслано запит головному адміну на підтвердження.</p>
+      <p style="color:#93a3b8;font-size:13px;">Зачекайте, поки адмін підтвердить, потім натисніть «Спробувати ще раз».</p>
+      <button class="btn" id="retryLoginBtn" style="margin-top:10px;">Спробувати ще раз</button>
+    </div>`;
+  document.getElementById("retryLoginBtn").addEventListener("click", () => location.reload());
 }
 
 function doLogout() {
@@ -180,6 +208,9 @@ function showMainApp() {
   document.getElementById("mainApp").classList.remove("hidden");
   document.getElementById("meLabel").textContent =
     `${ME.username} (${roleLabel(ME.role)}${ME.location ? ", " + ME.location : ""})`;
+  const pwdBtn = document.createElement("span");
+  pwdBtn.innerHTML = ` <button class="btn small secondary" onclick="openChangePasswordModal()" style="margin-left:6px;">🔑 Змінити пароль</button>`;
+  document.getElementById("meLabel").appendChild(pwdBtn);
   if (ME.role !== "seller") {
     const testBtn = document.createElement("span");
     testBtn.innerHTML = ` <button class="btn small secondary" onclick="sendTestPush()" style="margin-left:6px;">🔔 Тест сповіщення</button>`;
@@ -193,6 +224,39 @@ function showMainApp() {
 function roleLabel(role) {
   return { seller: "продавець", admin: "адмін", head_admin: "головний адмін", parts_admin: "адмін запчастин" }[role] || role;
 }
+
+window.openChangePasswordModal = () => {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <h3>🔑 Змінити пароль</h3>
+      <p style="color:#93a3b8;font-size:13px;">Після зміни відповідальність за збереження нового пароля - ваша.</p>
+      <label>Поточний пароль</label><input id="oldPassword" type="password">
+      <label>Новий пароль (мінімум 6 символів)</label><input id="newPassword" type="password">
+      <label>Повторіть новий пароль</label><input id="newPassword2" type="password">
+      <div class="grid2">
+        <button class="btn secondary" id="pwdCancel">Скасувати</button>
+        <button class="btn" id="pwdSave">Змінити</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("pwdCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.getElementById("pwdSave").addEventListener("click", async () => {
+    const oldPassword = document.getElementById("oldPassword").value;
+    const newPassword = document.getElementById("newPassword").value;
+    const newPassword2 = document.getElementById("newPassword2").value;
+    if (newPassword !== newPassword2) { toast("Паролі не збігаються", "error"); return; }
+    if (newPassword.length < 6) { toast("Новий пароль має містити щонайменше 6 символів", "error"); return; }
+    try {
+      await api("/me/change-password", { method: "POST", json: { old_password: oldPassword, new_password: newPassword } });
+      toast("✅ Пароль змінено");
+      close();
+    } catch (err) { toast(err.message, "error"); }
+  });
+};
 
 // ----------------------------------------------------------------------------
 // Допоміжне: вибір фото з камери, елемент товару, вибір точки (для адміна)
@@ -581,6 +645,12 @@ async function renderAdminsView() {
   view.innerHTML = `
     <h2>👑 Адміни</h2>
     <div class="card">
+      <h3>⏱️ Термін зберігання запчастин</h3>
+      <p style="color:#93a3b8;font-size:13px;">Оброблені посилання на запчастини старші за вказану кількість днів видалятимуться автоматично. Залиште порожнім, щоб не видаляти взагалі.</p>
+      <label>Днів зберігати після обробки</label><input id="partRetentionDays" type="number" placeholder="наприклад 30">
+      <button class="btn secondary" id="saveRetentionBtn">Зберегти</button>
+    </div>
+    <div class="card">
       <label>Логін</label><input id="newAdminLogin">
       <label>Пароль</label><input id="newAdminPass" type="password">
       <label>Роль</label>
@@ -591,6 +661,19 @@ async function renderAdminsView() {
       <button class="btn" id="addAdminBtn">➕ Додати адміна</button>
     </div>
     <div id="adminsList">Завантаження...</div>`;
+
+  try {
+    const current = await api("/settings/part-retention");
+    if (current.days) document.getElementById("partRetentionDays").value = current.days;
+  } catch (err) { /* ігноруємо, поле лишиться порожнім */ }
+  document.getElementById("saveRetentionBtn").addEventListener("click", async () => {
+    const days = document.getElementById("partRetentionDays").value.trim();
+    try {
+      await api("/settings/part-retention", { method: "POST", json: { days: days || null } });
+      toast("✅ Збережено");
+    } catch (err) { toast(err.message, "error"); }
+  });
+
   document.getElementById("addAdminBtn").addEventListener("click", async () => {
     try {
       await api("/admins", {
@@ -878,10 +961,13 @@ async function loadRequestsList() {
   const listEl = document.getElementById("requestsList");
   try {
     const canSeeQty = ME.role === "admin" || ME.role === "head_admin";
-    const [qtyRows, repairRows, partRows] = await Promise.all([
+    const isFullAdmin = ME.role === "admin" || ME.role === "head_admin";
+    const isHeadAdmin = ME.role === "head_admin";
+    const [qtyRows, repairRows, partRows, loginRows] = await Promise.all([
       canSeeQty ? api("/qty-requests/pending") : Promise.resolve([]),
       api("/repair-delete-requests/pending"),
-      api("/part-requests/pending"),
+      isFullAdmin ? api("/part-requests/all") : api("/part-requests/pending"),
+      isHeadAdmin ? api("/login-requests/pending") : Promise.resolve([]),
     ]);
     let html = "";
     if (qtyRows.length) {
@@ -906,11 +992,35 @@ async function loadRequestsList() {
         </div>`).join("");
     }
     if (partRows.length) {
-      html += `<h3>🔩 Запчастини на замовлення</h3>` + partRows.map(r => `
-        <div class="card">
-          <div class="name">${r.location}${r.note ? " — " + r.note : ""}</div>
+      const title = isFullAdmin ? "🔩 Запчастини (уся історія, всі точки)" : "🔩 Запчастини на замовлення";
+      html += `<h3>${title}</h3>` + partRows.map(r => {
+        const status = isFullAdmin
+          ? (r.status === "done" ? `<span class="badge done">оброблено</span>` : `<span class="badge pending">очікує</span>`)
+          : "";
+        const repairLine = r.receipt_number ? `<div class="meta">Для квитанції №${r.receipt_number}</div>` : "";
+        const actions = isFullAdmin
+          ? `<div class="grid2" style="margin-top:8px;">
+               <button class="btn small" onclick="editPartRequest(${r.id}, '${(r.link || "").replace(/'/g, "&#39;")}', '${(r.note || "").replace(/'/g, "&#39;")}', ${r.repair_id || "null"})">✏️ Редагувати</button>
+               <button class="btn small danger" onclick="deletePartRequest(${r.id})">🗑️ Видалити</button>
+             </div>`
+          : `<button class="btn" style="margin-top:8px;" onclick="markPartRequestDone(${r.id})">✅ Замовлено / оброблено</button>`;
+        return `<div class="card">
+          <div class="name">${r.location}${r.note ? " — " + r.note : ""} ${status}</div>
           <div class="meta"><a href="${r.link}" style="color:#5b9bd5;">${r.link}</a></div>
-          <button class="btn" style="margin-top:8px;" onclick="markPartRequestDone(${r.id})">✅ Замовлено / оброблено</button>
+          ${repairLine}
+          ${actions}
+        </div>`;
+      }).join("");
+    }
+    if (loginRows.length) {
+      html += `<h3>🔐 Нові пристрої продавців</h3>` + loginRows.map(r => `
+        <div class="card">
+          <div class="name">${r.username}</div>
+          <div class="meta">${r.device_info || "невідомий пристрій"} | ${r.created_at}</div>
+          <div class="grid2" style="margin-top:8px;">
+            <button class="btn" onclick="decideLoginRequest(${r.id}, true)">✅ Підтвердити</button>
+            <button class="btn danger" onclick="decideLoginRequest(${r.id}, false)">❌ Відхилити</button>
+          </div>
         </div>`).join("");
     }
     listEl.innerHTML = html || "<p>Немає запитів, що очікують підтвердження.</p>";
@@ -925,10 +1035,91 @@ window.markPartRequestDone = async (id) => {
   } catch (err) { toast(err.message, "error"); }
 };
 
+window.editPartRequest = async (id, currentLink, currentNote, currentRepairId) => {
+  let repairOptions = `<option value="">— не вказано —</option>`;
+  try {
+    const pending = await api("/repairs/pending");
+    repairOptions += pending.map(r =>
+      `<option value="${r.id}" ${r.id === currentRepairId ? "selected" : ""}>№${r.receipt_number} (прийнято ${r.intake_date})</option>`
+    ).join("");
+  } catch (err) { /* без вибору, якщо не вдалось завантажити */ }
+
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.id = "editPartOverlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <h3>✏️ Редагувати запчастину</h3>
+      <label>Посилання</label><input id="editPartLink" value="${currentLink.replace(/"/g, "&quot;")}">
+      <label>Коментар</label><input id="editPartNote" value="${currentNote.replace(/"/g, "&quot;")}">
+      <label>Для якої квитанції в ремонті</label>
+      <select id="editPartRepair">${repairOptions}</select>
+      <div class="grid2">
+        <button class="btn secondary" id="editPartCancel">Скасувати</button>
+        <button class="btn" id="editPartSave">Зберегти</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("editPartCancel").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.getElementById("editPartSave").addEventListener("click", async () => {
+    const link = document.getElementById("editPartLink").value.trim();
+    const note = document.getElementById("editPartNote").value.trim();
+    const repairId = document.getElementById("editPartRepair").value || null;
+    if (!link) { toast("Посилання не може бути порожнім", "error"); return; }
+    try {
+      await api(`/part-requests/${id}`, { method: "PATCH", json: { link, note, repair_id: repairId } });
+      toast("✅ Збережено");
+      close();
+      loadRequestsList();
+    } catch (err) { toast(err.message, "error"); }
+  });
+};
+
+window.deletePartRequest = (id) => {
+  showConfirmModal("Видалити цей запис про запчастину? Дію не можна скасувати.", async () => {
+    try {
+      await api(`/part-requests/${id}`, { method: "DELETE" });
+      toast("🗑️ Видалено");
+      loadRequestsList();
+    } catch (err) { toast(err.message, "error"); }
+  });
+};
+
+function showConfirmModal(message, onConfirm) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.innerHTML = `
+    <div class="modal-sheet">
+      <p>${message}</p>
+      <div class="grid2">
+        <button class="btn secondary" id="confirmCancelBtn">Скасувати</button>
+        <button class="btn danger" id="confirmOkBtn">Так, видалити</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  document.getElementById("confirmCancelBtn").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  document.getElementById("confirmOkBtn").addEventListener("click", async () => {
+    close();
+    await onConfirm();
+  });
+}
+
 window.decideRepairDeleteRequest = async (id, approve) => {
   try {
     await api(`/repair-delete-requests/${id}/${approve ? "approve" : "reject"}`, { method: "POST" });
     toast(approve ? "✅ Квитанцію видалено" : "Відхилено");
+    loadRequestsList();
+  } catch (err) { toast(err.message, "error"); }
+};
+
+window.decideLoginRequest = async (id, approve) => {
+  try {
+    await api(`/login-requests/${id}/${approve ? "approve" : "reject"}`, { method: "POST" });
+    toast(approve ? "✅ Пристрій підтверджено" : "Відхилено");
     loadRequestsList();
   } catch (err) { toast(err.message, "error"); }
 };
@@ -979,7 +1170,13 @@ const PARTS_SITES = [
   { name: "GSM Server", url: "https://gsmserver.com.ua/uk/" },
 ];
 
-window.openQuickPartModal = () => {
+window.openQuickPartModal = async () => {
+  let repairOptions = `<option value="">— не вказано —</option>`;
+  try {
+    const pending = await api("/repairs/pending");
+    repairOptions += pending.map(r => `<option value="${r.id}">№${r.receipt_number} (прийнято ${r.intake_date})</option>`).join("");
+  } catch (err) { /* якщо не вдалось завантажити - просто без вибору */ }
+
   const overlay = document.createElement("div");
   overlay.className = "modal-overlay";
   overlay.id = "quickPartOverlay";
@@ -989,6 +1186,8 @@ window.openQuickPartModal = () => {
       <p style="color:#93a3b8;font-size:13px;">Вставте скопійоване посилання на потрібну деталь.</p>
       <label>Посилання</label><input id="quickPartLink" placeholder="https://...">
       <label>Коментар (необов'язково)</label><input id="quickPartNote" placeholder="Наприклад: екран для iPhone 12">
+      <label>Для якої квитанції в ремонті (необов'язково)</label>
+      <select id="quickPartRepair">${repairOptions}</select>
       <div class="grid2">
         <button class="btn secondary" id="quickPartCancel">Скасувати</button>
         <button class="btn" id="quickPartSend">Надіслати адміну</button>
@@ -1001,9 +1200,10 @@ window.openQuickPartModal = () => {
   document.getElementById("quickPartSend").addEventListener("click", async () => {
     const link = document.getElementById("quickPartLink").value.trim();
     const note = document.getElementById("quickPartNote").value.trim();
+    const repairId = document.getElementById("quickPartRepair").value || null;
     if (!link) { toast("Вставте посилання на запчастину", "error"); return; }
     try {
-      await api("/part-requests", { method: "POST", json: { link, note } });
+      await api("/part-requests", { method: "POST", json: { link, note, repair_id: repairId } });
       toast("📨 Надіслано адміну");
       closeQuickPartModal();
     } catch (err) { toast(err.message, "error"); }
@@ -1015,15 +1215,41 @@ function closeQuickPartModal() {
   if (overlay) overlay.remove();
 }
 
-function renderPartsView() {
+async function renderPartsView() {
   const view = document.getElementById("view");
   view.innerHTML = `<h2>🔗 Замовлення запчастин</h2>
     <p style="color:#93a3b8;font-size:13px;margin-bottom:10px;">Після переходу на сайт натисніть кнопку «Назад» на телефоні, щоб швидко повернутись у застосунок - тоді натисніть помаранчеву кнопку 🔩 внизу справа, щоб надіслати посилання адміну з будь-якого екрана.</p>` +
     PARTS_SITES.map(s =>
       `<a href="${s.url}" class="btn secondary" style="text-decoration:none;display:block;">${s.name} ↗</a>`
     ).join("") + `
-    <button class="btn" style="margin-top:14px;" onclick="openQuickPartModal()">🔩 Надіслати посилання на запчастину адміну</button>`;
+    <button class="btn" style="margin-top:14px;" onclick="openQuickPartModal()">🔩 Надіслати посилання на запчастину адміну</button>
+    <h3 style="margin-top:16px;">📜 Мої надіслані запчастини</h3>
+    <div id="myPartsList">Завантаження...</div>`;
+
+  try {
+    const mine = await api("/part-requests/mine");
+    document.getElementById("myPartsList").innerHTML = mine.length ? mine.map(r => {
+      const status = r.status === "done" ? `<span class="badge done">оброблено</span>` : `<span class="badge pending">очікує</span>`;
+      const repairLine = r.receipt_number ? `<div class="meta">Для квитанції №${r.receipt_number}</div>` : "";
+      return `<div class="card">
+        <div class="name">${r.note || "(без коментаря)"} ${status}</div>
+        <div class="meta"><a href="${r.link}" style="color:#5b9bd5;">${r.link}</a></div>
+        ${repairLine}
+        <button class="btn small danger" style="margin-top:8px;" onclick="deleteMyPartRequest(${r.id})">🗑️ Видалити</button>
+      </div>`;
+    }).join("") : "<p style='color:#93a3b8;'>Ще нічого не надсилали.</p>";
+  } catch (err) { toast(err.message, "error"); }
 }
+
+window.deleteMyPartRequest = (id) => {
+  showConfirmModal("Видалити це своє посилання на запчастину?", async () => {
+    try {
+      await api(`/part-requests/${id}`, { method: "DELETE" });
+      toast("🗑️ Видалено");
+      renderPartsView();
+    } catch (err) { toast(err.message, "error"); }
+  });
+};
 
 // ----------------------------------------------------------------------------
 // Web Push - підписка на сповіщення (для адмінів)

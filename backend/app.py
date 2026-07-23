@@ -235,14 +235,78 @@ def login():
         _register_failed_login(rate_key)
         return jsonify({"error": "Невірний логін або пароль"}), 401
     _LOGIN_ATTEMPTS.pop(rate_key, None)  # успішний вхід - скидаємо лічильник
+
+    # Підтвердження нового пристрою - лише для продавців. Замість того, щоб
+    # "вибивати" попередній сеанс, новий пристрій потребує підтвердження
+    # головного адміна (сеанс на старому пристрої продовжує працювати).
+    if role == "seller":
+        device_id = (data.get("device_id") or "").strip()
+        if not device_id:
+            return jsonify({"error": "Пристрій не розпізнано, оновіть застосунок"}), 400
+        if not db.is_device_approved(user_id, device_id):
+            existing = db.get_pending_login_request(user_id, device_id)
+            if existing:
+                return jsonify({"status": "pending", "request_id": existing[0],
+                                 "error": "Очікує підтвердження головного адміна"}), 202
+            device_info = (data.get("device_info") or request.headers.get("User-Agent", ""))[:200]
+            request_id = db.create_login_request(user_id, uname, device_id, device_info)
+            notify_admins_push(
+                "🔐 Новий пристрій продавця",
+                f"{uname} намагається увійти з нового пристрою - потрібне підтвердження",
+            )
+            return jsonify({"status": "pending", "request_id": request_id,
+                             "error": "Новий пристрій - надіслано запит головному адміну на підтвердження"}), 202
+
     token = make_token(user_id, uname, role, location)
     return jsonify({"token": token, "role": role, "location": location, "username": uname})
+
+
+@app.route("/api/login-requests/pending", methods=["GET"])
+@login_required
+@head_admin_required
+def pending_login_requests_route():
+    rows = db.get_pending_login_requests()
+    return jsonify([
+        {"id": r[0], "username": r[1], "device_info": r[2], "created_at": r[3]}
+        for r in rows
+    ])
+
+
+@app.route("/api/login-requests/<int:request_id>/approve", methods=["POST"])
+@login_required
+@head_admin_required
+def approve_login_request_route(request_id):
+    ok = db.decide_login_request(request_id, True, g.user["user_id"])
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/login-requests/<int:request_id>/reject", methods=["POST"])
+@login_required
+@head_admin_required
+def reject_login_request_route(request_id):
+    ok = db.decide_login_request(request_id, False, g.user["user_id"])
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/me", methods=["GET"])
 @login_required
 def me():
     return jsonify(g.user)
+
+
+@app.route("/api/me/change-password", methods=["POST"])
+@login_required
+def change_password_route():
+    data = request.get_json(force=True)
+    old_password = data.get("old_password") or ""
+    new_password = data.get("new_password") or ""
+    if len(new_password) < 6:
+        return jsonify({"error": "Новий пароль має містити щонайменше 6 символів"}), 400
+    current_hash = db.get_password_hash(g.user["user_id"])
+    if current_hash is None or not db.verify_password(old_password, current_hash):
+        return jsonify({"error": "Поточний пароль невірний"}), 400
+    db.change_password(g.user["user_id"], new_password)
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -780,7 +844,8 @@ def create_part_request_route():
     if not link:
         return jsonify({"error": "Вставте посилання на запчастину"}), 400
     note = (data.get("note") or "").strip()
-    request_id = db.create_part_request(location, link, note, g.user["user_id"])
+    repair_id = data.get("repair_id") or None
+    request_id = db.create_part_request(location, link, note, g.user["user_id"], repair_id)
     notify_admins_push(
         "🔩 Запит на запчастину",
         f"{g.user['username']} ({location}): {note or link}",
@@ -792,10 +857,12 @@ def create_part_request_route():
 @login_required
 @parts_or_admin_required
 def pending_part_requests_route():
+    db.cleanup_old_part_requests()
     location = request.args.get("location")
     rows = db.get_pending_part_requests(location)
     return jsonify([
-        {"id": r[0], "location": r[1], "link": r[2], "note": r[3], "requested_at": r[4]}
+        {"id": r[0], "location": r[1], "link": r[2], "note": r[3], "requested_at": r[6],
+         "repair_id": r[7], "receipt_number": r[8]}
         for r in rows
     ])
 
@@ -806,6 +873,97 @@ def pending_part_requests_route():
 def mark_part_request_done_route(request_id):
     ok = db.mark_part_request_done(request_id, g.user["user_id"])
     return jsonify({"ok": ok})
+
+
+@app.route("/api/part-requests/all", methods=["GET"])
+@login_required
+@admin_required
+def all_part_requests_route():
+    """Уся історія (будь-який статус) на всіх точках - лише повний/головний
+    адмін, для контролю запчастин у ремонті та їх повернення."""
+    db.cleanup_old_part_requests()
+    location = request.args.get("location")
+    rows = db.get_all_part_requests(location)
+    return jsonify([
+        {"id": r[0], "location": r[1], "link": r[2], "note": r[3], "requested_by": r[4],
+         "status": r[5], "requested_at": r[6], "repair_id": r[7], "receipt_number": r[8]}
+        for r in rows
+    ])
+
+
+@app.route("/api/part-requests/mine", methods=["GET"])
+@login_required
+def my_part_requests_route():
+    """Власна історія запитів продавця - щоб бачити й видаляти лише свої."""
+    rows = db.get_part_requests_by_user(g.user["user_id"])
+    return jsonify([
+        {"id": r[0], "location": r[1], "link": r[2], "note": r[3], "status": r[5],
+         "requested_at": r[6], "repair_id": r[7], "receipt_number": r[8]}
+        for r in rows
+    ])
+
+
+@app.route("/api/part-requests/<int:request_id>", methods=["PATCH"])
+@login_required
+@admin_required
+def update_part_request_route(request_id):
+    """Редагування посилання/коментаря/прив'язки до квитанції - лише повний/головний адмін."""
+    data = request.get_json(force=True)
+    link = (data.get("link") or "").strip()
+    if not link:
+        return jsonify({"error": "Посилання не може бути порожнім"}), 400
+    note = (data.get("note") or "").strip()
+    repair_id = data.get("repair_id") or None
+    ok = db.update_part_request(request_id, link, note, repair_id)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/part-requests/<int:request_id>", methods=["DELETE"])
+@login_required
+def delete_part_request_route(request_id):
+    """Видалення: адмін/головний адмін - будь-яке; продавець - лише своє;
+    адмін запчастин (parts_admin) видаляти не може взагалі."""
+    row = db.get_part_request_by_id(request_id)
+    if row is None:
+        return jsonify({"error": "Запит не знайдено"}), 404
+    _, location, link, note, requested_by, status, repair_id = row
+
+    if g.user["role"] in ("admin", "head_admin"):
+        db.delete_part_request(request_id)
+        return jsonify({"ok": True})
+
+    if g.user["role"] == "seller" and requested_by == g.user["user_id"]:
+        db.delete_part_request(request_id)
+        return jsonify({"ok": True})
+
+    return jsonify({"error": "Немає прав на видалення цього запиту"}), 403
+
+
+@app.route("/api/settings/part-retention", methods=["GET"])
+@login_required
+@head_admin_required
+def get_part_retention_route():
+    days = db.get_setting(db.PART_RETENTION_SETTING_KEY)
+    return jsonify({"days": int(days) if days else None})
+
+
+@app.route("/api/settings/part-retention", methods=["POST"])
+@login_required
+@head_admin_required
+def set_part_retention_route():
+    data = request.get_json(force=True)
+    days = data.get("days")
+    if days in (None, "", 0):
+        db.set_setting(db.PART_RETENTION_SETTING_KEY, "")
+        return jsonify({"ok": True, "days": None})
+    try:
+        days = int(days)
+        if days <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({"error": "Кількість днів має бути додатним числом"}), 400
+    db.set_setting(db.PART_RETENTION_SETTING_KEY, days)
+    return jsonify({"ok": True, "days": days})
 
 
 @app.route("/api/repairs/report", methods=["GET"])
