@@ -144,7 +144,17 @@ def notify_admins_push(title, body, url=None):
 
 @app.route("/api/push/public-key", methods=["GET"])
 def push_public_key():
-    return jsonify({"publicKey": vapid.get_public_key_b64()})
+    return jsonify({"publicKey": vapid.get_public_key_b64(), "usingEnvKeys": vapid.using_env_keys()})
+
+
+@app.route("/api/settings/generate-vapid-keys", methods=["POST"])
+@login_required
+@head_admin_required
+def generate_vapid_keys_route():
+    """Генерує НОВУ пару VAPID-ключів для копіювання у змінні середовища
+    Render - нічого не зберігає на сервері, лише повертає для копіювання."""
+    private_b64, public_b64 = vapid.generate_env_keys()
+    return jsonify({"VAPID_PRIVATE_KEY": private_b64, "VAPID_PUBLIC_KEY": public_b64})
 
 
 @app.route("/api/push/subscribe", methods=["POST"])
@@ -347,7 +357,11 @@ def item_to_dict(row):
 def identify_item():
     """Приймає фото, повертає: знайдений точний збіг (за штрихкодом),
     список схожих за фото, або "нічого не знайдено" - разом з обчисленим
-    хешем/штрихкодом, щоб фронтенд міг використати їх при створенні нового товару."""
+    хешем/штрихкодом, щоб фронтенд міг використати їх при створенні нового товару.
+
+    Штрихкод переважно розпізнається БРАУЗЕРОМ (client_barcode) - сервер
+    (Render та подібні хостинги) часто не має системної бібліотеки
+    libzbar0, тож серверне розпізнавання лишається лише як запасний варіант."""
     location = request.form.get("location") or seller_location(g.user)
     if not location:
         return jsonify({"error": "Не вказано торгову точку"}), 400
@@ -356,7 +370,8 @@ def identify_item():
         return jsonify({"error": "Немає фото"}), 400
 
     photo_bytes = photo.read()
-    barcode = imaging.detect_barcodes(photo_bytes)
+    client_barcode = (request.form.get("client_barcode") or "").strip()
+    barcode = client_barcode or imaging.detect_barcodes(photo_bytes)
 
     if barcode:
         exact = db.get_item_by_barcode(location, barcode)
@@ -512,7 +527,8 @@ def detect_barcode_for_price():
     if photo is None:
         return jsonify({"error": "Немає фото"}), 400
     photo_bytes = photo.read()
-    barcode = imaging.detect_barcodes(photo_bytes)
+    client_barcode = (request.form.get("client_barcode") or "").strip()
+    barcode = client_barcode or imaging.detect_barcodes(photo_bytes)
     if not barcode:
         return jsonify({"barcode": None, "item": None})
     item = db.get_item_by_barcode_any_location(barcode)

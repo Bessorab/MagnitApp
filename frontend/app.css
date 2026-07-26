@@ -7,7 +7,7 @@ body {
   min-height: 100vh;
 }
 
-#app { max-width: 480px; margin: 0 auto; padding: 12px; padding-bottom: 90px; }
+#app { max-width: 480px; margin: 0 auto; padding: 12px; padding-bottom: 280px; }
 
 h1, h2, h3 { font-weight: 600; margin-bottom: 12px; }
 h1 { font-size: 20px; }
@@ -118,26 +118,32 @@ label { display: block; font-size: 13px; color: #93a3b8; margin-bottom: 4px; }
 nav.bottomnav {
   position: fixed; bottom: 0; left: 0; right: 0;
   background: #1a2432;
-  display: flex;
-  overflow-x: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 8px;
   border-top: 1px solid #2a3648;
   z-index: 50;
+  max-height: 45vh;
+  overflow-y: auto;
 }
 nav.bottomnav button {
-  flex: 0 0 auto;
-  background: none;
+  background: #232f42;
   border: none;
-  color: #93a3b8;
-  padding: 10px 14px;
-  font-size: 12px;
+  border-radius: 10px;
+  color: #d5dce6;
+  padding: 14px 8px;
+  font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
 }
-nav.bottomnav button.active { color: #2563eb; font-weight: 600; }
+nav.bottomnav button.active { background: #2563eb; color: white; }
+nav.bottomnav button.logout-btn { grid-column: 1 / -1; background: #3a2323; color: #f0a3a3; }
 
 .fab {
   position: fixed;
   right: 16px;
-  bottom: 66px;
+  bottom: 260px;
   width: 56px;
   height: 56px;
   border-radius: 50%;

@@ -72,6 +72,29 @@ function resizePhotoBeforeUpload(file, maxDimension = 1280, quality = 0.82) {
   });
 }
 
+// ----------------------------------------------------------------------------
+// Розпізнавання штрихкоду ПРЯМО В БРАУЗЕРІ - сервер (наприклад, Render)
+// зазвичай не має системної бібліотеки libzbar0, тому серверне розпізнавання
+// ненадійне. У браузері ж ZXing працює завжди, незалежно від хостингу.
+// ----------------------------------------------------------------------------
+let _zxingReader = null;
+async function decodeBarcodeFromFile(file) {
+  if (typeof ZXing === "undefined") return null;
+  if (!_zxingReader) _zxingReader = new ZXing.BrowserMultiFormatReader();
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; });
+    const result = await _zxingReader.decodeFromImageElement(img);
+    return result ? result.getText() : null;
+  } catch (err) {
+    return null; // штрихкод не знайдено на фото - це нормально, не помилка
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function toast(msg, kind) {
   const el = document.createElement("div");
   el.className = "toast" + (kind ? " " + kind : "");
@@ -180,7 +203,7 @@ function renderBottomNav() {
   const tabs = tabsForRole();
   nav.innerHTML = tabs.map(t =>
     `<button data-tab="${t.id}" class="${t.id === currentTab ? "active" : ""}">${t.label}</button>`
-  ).join("") + `<button data-tab="__logout">🚪 Вихід</button>`;
+  ).join("") + `<button data-tab="__logout" class="logout-btn">🚪 Вихід</button>`;
   nav.querySelectorAll("button").forEach(btn => {
     btn.addEventListener("click", () => {
       if (btn.dataset.tab === "__logout") { doLogout(); return; }
@@ -317,8 +340,10 @@ async function handleSalePhoto(e) {
   resultEl.innerHTML = "<p>Стискаю фото...</p>";
   const resized = await resizePhotoBeforeUpload(file);
   resultEl.innerHTML = "<p>Аналізую фото...</p>";
+  const clientBarcode = await decodeBarcodeFromFile(resized);
   const form = new FormData();
   form.append("photo", resized);
+  if (clientBarcode) form.append("client_barcode", clientBarcode);
   try {
     const data = await api("/items/identify", { method: "POST", form });
     if (data.status === "exact_match") {
@@ -487,8 +512,10 @@ async function handleSupplyPhoto(e) {
   resultEl.innerHTML = "<p>Стискаю фото...</p>";
   const resized = await resizePhotoBeforeUpload(file);
   resultEl.innerHTML = "<p>Аналізую фото...</p>";
+  const clientBarcode = await decodeBarcodeFromFile(resized);
   const form = new FormData();
   form.append("photo", resized);
+  if (clientBarcode) form.append("client_barcode", clientBarcode);
   try {
     const data = await api("/items/identify", { method: "POST", form });
     if (data.status === "exact_match" || (data.status === "possible_matches" && data.matches.length)) {
@@ -588,7 +615,9 @@ async function renderRepairIssueList() {
             `<a href="${p.link}" style="color:#5b9bd5;">${p.note || p.link}</a>${p.status === "done" ? " ✅" : " ⏳"}`
           ).join(", ") + `</div>`
         : "";
+      const photoImg = r.photo_url ? `<img src="${authedPhotoUrl(r.photo_url)}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;margin-right:10px;">` : "";
       return `<div class="item-row">
+         ${photoImg}
          <div class="info" style="cursor:pointer;" onclick="issueRepair(${r.id})">
            <div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date} - торкніться, щоб видати</div>
            ${partsLine}
@@ -683,6 +712,7 @@ async function renderAdminsView() {
   const view = document.getElementById("view");
   view.innerHTML = `
     <h2>👑 Адміни</h2>
+    <div class="card" id="vapidStatusCard">Перевірка стабільності push-сповіщень...</div>
     <div class="card">
       <h3>⏱️ Термін зберігання запчастин</h3>
       <p style="color:#93a3b8;font-size:13px;">Оброблені посилання на запчастини старші за вказану кількість днів видалятимуться автоматично. Залиште порожнім, щоб не видаляти взагалі.</p>
@@ -700,6 +730,29 @@ async function renderAdminsView() {
       <button class="btn" id="addAdminBtn">➕ Додати адміна</button>
     </div>
     <div id="adminsList">Завантаження...</div>`;
+
+  try {
+    const status = await api("/push/public-key");
+    const cardEl = document.getElementById("vapidStatusCard");
+    if (status.usingEnvKeys) {
+      cardEl.innerHTML = `<p>✅ Ключі push-сповіщень закріплені надійно - сповіщення не зникнуть після перезапуску сервера.</p>`;
+    } else {
+      cardEl.innerHTML = `
+        <h3>⚠️ Push-сповіщення можуть перестати працювати</h3>
+        <p style="color:#93a3b8;font-size:13px;">Ключі сповіщень зараз зберігаються тимчасово. Якщо сервер перезапуститься (наприклад, на Render) - усі підписки на сповіщення перестануть працювати непомітно. Щоб цього уникнути, закріпіть ключі один раз:</p>
+        <button class="btn secondary" id="genVapidBtn">Згенерувати ключі для Render</button>
+        <div id="vapidKeysResult" style="margin-top:8px;"></div>`;
+      document.getElementById("genVapidBtn").addEventListener("click", async () => {
+        try {
+          const keys = await api("/settings/generate-vapid-keys", { method: "POST" });
+          document.getElementById("vapidKeysResult").innerHTML = `
+            <p style="font-size:12px;color:#93a3b8;">Додайте ці дві змінні середовища в Render (Environment) і передеплойте:</p>
+            <input readonly value="VAPID_PRIVATE_KEY=${keys.VAPID_PRIVATE_KEY}" onclick="this.select()">
+            <input readonly value="VAPID_PUBLIC_KEY=${keys.VAPID_PUBLIC_KEY}" onclick="this.select()">`;
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+  } catch (err) { document.getElementById("vapidStatusCard").innerHTML = ""; }
 
   try {
     const current = await api("/settings/part-retention");
@@ -773,8 +826,10 @@ async function handlePricePhoto(e) {
   const resultEl = document.getElementById("priceScanResult");
   resultEl.innerHTML = "<p>Стискаю і аналізую фото...</p>";
   const resized = await resizePhotoBeforeUpload(file);
+  const clientBarcode = await decodeBarcodeFromFile(resized);
   const form = new FormData();
   form.append("photo", resized);
+  if (clientBarcode) form.append("client_barcode", clientBarcode);
   try {
     const data = await api("/items/detect-barcode-for-price", { method: "POST", form });
     if (!data.barcode) {
@@ -978,7 +1033,8 @@ function renderRepairRows(rows, pendingOnly) {
            <button class="btn small danger" onclick="deleteRepairAdmin(${r.id})">🗑️ Видалити</button>
          </div>`
       : "";
-    return `<div class="card"><div class="item-row"><div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div>${costLine}${partsLine}</div>${status}</div>${actions}</div>`;
+    const photoImg = r.photo_url ? `<img src="${authedPhotoUrl(r.photo_url)}" style="width:56px;height:56px;object-fit:cover;border-radius:8px;margin-right:10px;">` : "";
+    return `<div class="card"><div class="item-row">${photoImg}<div class="info"><div class="name">№${r.receipt_number}</div><div class="meta">Прийнято: ${r.intake_date}</div>${costLine}${partsLine}</div>${status}</div>${actions}</div>`;
   }).join("");
 }
 
