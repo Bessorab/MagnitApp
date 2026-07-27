@@ -95,36 +95,6 @@ def init_db():
             conn.execute("DROP TABLE users_old")
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                photo_path TEXT,
-                name TEXT,
-                color TEXT NOT NULL,
-                price REAL NOT NULL,
-                quantity INTEGER NOT NULL,
-                location TEXT NOT NULL,
-                photo_hash TEXT,
-                barcode TEXT,
-                added_by INTEGER,
-                added_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sales (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_id INTEGER,
-                location TEXT NOT NULL,
-                price REAL NOT NULL,
-                payment_method TEXT NOT NULL,
-                sold_by INTEGER,
-                sold_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS repairs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 photo_path TEXT,
@@ -167,23 +137,6 @@ def init_db():
                 p256dh TEXT NOT NULL,
                 auth TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS qty_requests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                item_id INTEGER NOT NULL,
-                location TEXT NOT NULL,
-                old_quantity INTEGER NOT NULL,
-                new_quantity INTEGER NOT NULL,
-                reason TEXT,
-                requested_by INTEGER,
-                status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected')),
-                requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                decided_at TEXT,
-                decided_by INTEGER
             )
             """
         )
@@ -341,186 +294,11 @@ def list_users(role=None):
 def rename_location(old_location, new_location):
     with closing(get_connection()) as conn:
         cur1 = conn.execute("UPDATE users SET location = ? WHERE location = ?", (new_location, old_location))
-        cur2 = conn.execute("UPDATE items SET location = ? WHERE location = ?", (new_location, old_location))
+        cur2 = conn.execute("UPDATE repairs SET location = ? WHERE location = ?", (new_location, old_location))
+        conn.execute("UPDATE part_requests SET location = ? WHERE location = ?", (new_location, old_location))
+        conn.execute("UPDATE repair_baselines SET location = ? WHERE location = ?", (new_location, old_location))
         conn.commit()
         return cur1.rowcount, cur2.rowcount
-
-
-# ---------------------------------------------------------------------------
-# Товари
-# ---------------------------------------------------------------------------
-def add_item(photo_path, name, color, price, quantity, location, added_by, photo_hash=None, barcode=None):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "INSERT INTO items (photo_path, name, color, price, quantity, location, photo_hash, barcode, added_by, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (photo_path, name, color, price, quantity, location, photo_hash, barcode, added_by, now_str()),
-        )
-        conn.commit()
-        return cur.lastrowid
-
-
-def get_all_items(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, barcode FROM items WHERE location = ? ORDER BY id",
-            (location,),
-        )
-        return cur.fetchall()
-
-
-def get_item_by_id(location, item_id):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, barcode, photo_hash FROM items WHERE id = ? AND location = ?",
-            (item_id, location),
-        )
-        return cur.fetchone()
-
-
-def get_item_by_barcode(location, barcode):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, barcode FROM items WHERE barcode = ? AND location = ?",
-            (barcode, location),
-        )
-        return cur.fetchone()
-
-
-def get_items_with_hashes(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, photo_hash FROM items "
-            "WHERE location = ? AND quantity > 0 AND photo_hash IS NOT NULL",
-            (location,),
-        )
-        return cur.fetchall()
-
-
-def find_items_by_query(location, query):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, barcode FROM items "
-            "WHERE location = ? AND (LOWERU(color) LIKE LOWERU(?) OR LOWERU(name) LIKE LOWERU(?)) ORDER BY id",
-            (location, f"%{query}%", f"%{query}%"),
-        )
-        return cur.fetchall()
-
-
-def update_quantity(location, item_id, new_quantity):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "UPDATE items SET quantity = ? WHERE id = ? AND location = ?", (new_quantity, item_id, location)
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
-
-def add_quantity(location, item_id, delta):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "UPDATE items SET quantity = quantity + ? WHERE id = ? AND location = ?",
-            (delta, item_id, location),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
-
-def update_price_by_barcode(barcode, new_price):
-    with closing(get_connection()) as conn:
-        cur = conn.execute("UPDATE items SET price = ? WHERE barcode = ?", (new_price, barcode))
-        conn.commit()
-        return cur.rowcount
-
-
-def get_item_by_barcode_any_location(barcode):
-    """Знаходить один товар з таким штрихкодом незалежно від точки - лише
-    щоб показати назву/колір/поточну ціну перед зміною (адмін)."""
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity, location FROM items WHERE barcode = ? LIMIT 1",
-            (barcode,),
-        )
-        return cur.fetchone()
-
-
-def delete_item(location, item_id):
-    with closing(get_connection()) as conn:
-        cur = conn.execute("DELETE FROM items WHERE id = ? AND location = ?", (item_id, location))
-        conn.commit()
-        return cur.rowcount > 0
-
-
-def count_items_by_location(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute("SELECT COUNT(*) FROM items WHERE location = ?", (location,))
-        return cur.fetchone()[0]
-
-
-def delete_all_items_by_location(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute("DELETE FROM items WHERE location = ?", (location,))
-        conn.commit()
-        return cur.rowcount
-
-
-# ---------------------------------------------------------------------------
-# Продажі
-# ---------------------------------------------------------------------------
-def finalize_sale(location, item_id, price, payment_method, user_id):
-    """Атомарна операція: списати одиницю товару і зафіксувати продаж -
-    або обидві дії відбудуться, або жодна."""
-    with closing(get_connection()) as conn:
-        try:
-            cur = conn.execute(
-                "UPDATE items SET quantity = quantity - 1 WHERE id = ? AND location = ? AND quantity > 0",
-                (item_id, location),
-            )
-            if cur.rowcount == 0:
-                conn.rollback()
-                return None
-            conn.execute(
-                "INSERT INTO sales (item_id, location, price, payment_method, sold_by, sold_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (item_id, location, price, payment_method, user_id, now_str()),
-            )
-            conn.commit()
-            cur2 = conn.execute("SELECT quantity FROM items WHERE id = ?", (item_id,))
-            row = cur2.fetchone()
-            return row[0] if row else None
-        except Exception:
-            conn.rollback()
-            raise
-
-
-def get_today_sales_totals(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT payment_method, COUNT(*), COALESCE(SUM(price), 0) FROM sales "
-            "WHERE location = ? AND date(sold_at) = date(?) GROUP BY payment_method",
-            (location, today_str()),
-        )
-        return {row[0]: (row[1], row[2]) for row in cur.fetchall()}
-
-
-def get_sales_rows(location=None, start_date=None, end_date=None):
-    query = (
-        "SELECT sales.sold_at, sales.location, items.name, items.color, sales.price, sales.payment_method "
-        "FROM sales LEFT JOIN items ON items.id = sales.item_id WHERE 1=1"
-    )
-    params = []
-    if location:
-        query += " AND sales.location = ?"
-        params.append(location)
-    if start_date:
-        query += " AND date(sales.sold_at) >= date(?)"
-        params.append(start_date)
-    if end_date:
-        query += " AND date(sales.sold_at) <= date(?)"
-        params.append(end_date)
-    query += " ORDER BY sales.sold_at"
-    with closing(get_connection()) as conn:
-        cur = conn.execute(query, params)
-        return cur.fetchall()
 
 
 # ---------------------------------------------------------------------------
@@ -657,67 +435,6 @@ def get_admin_push_subscriptions():
         )
         return cur.fetchall()
 
-
-# ---------------------------------------------------------------------------
-# Запити на зміну кількості (продавець -> потребує підтвердження адміна)
-# ---------------------------------------------------------------------------
-def create_qty_request(item_id, location, old_quantity, new_quantity, reason, requested_by):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "INSERT INTO qty_requests (item_id, location, old_quantity, new_quantity, reason, requested_by, requested_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (item_id, location, old_quantity, new_quantity, reason, requested_by, now_str()),
-        )
-        conn.commit()
-        return cur.lastrowid
-
-
-def get_pending_qty_requests(location=None):
-    with closing(get_connection()) as conn:
-        if location:
-            cur = conn.execute(
-                "SELECT qr.id, qr.item_id, qr.location, qr.old_quantity, qr.new_quantity, qr.reason, qr.requested_at, "
-                "items.name, items.color FROM qty_requests qr LEFT JOIN items ON items.id = qr.item_id "
-                "WHERE qr.status = 'pending' AND qr.location = ? ORDER BY qr.requested_at",
-                (location,),
-            )
-        else:
-            cur = conn.execute(
-                "SELECT qr.id, qr.item_id, qr.location, qr.old_quantity, qr.new_quantity, qr.reason, qr.requested_at, "
-                "items.name, items.color FROM qty_requests qr LEFT JOIN items ON items.id = qr.item_id "
-                "WHERE qr.status = 'pending' ORDER BY qr.requested_at"
-            )
-        return cur.fetchall()
-
-
-def get_qty_request_by_id(request_id):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, item_id, location, old_quantity, new_quantity, reason, status FROM qty_requests WHERE id = ?",
-            (request_id,),
-        )
-        return cur.fetchone()
-
-
-def decide_qty_request(request_id, approve: bool, decided_by):
-    with closing(get_connection()) as conn:
-        request_row = conn.execute(
-            "SELECT item_id, location, new_quantity, status FROM qty_requests WHERE id = ?", (request_id,)
-        ).fetchone()
-        if request_row is None or request_row[3] != "pending":
-            return False
-        item_id, location, new_quantity, _ = request_row
-        status = "approved" if approve else "rejected"
-        conn.execute(
-            "UPDATE qty_requests SET status = ?, decided_at = ?, decided_by = ? WHERE id = ?",
-            (status, now_str(), decided_by, request_id),
-        )
-        if approve:
-            conn.execute(
-                "UPDATE items SET quantity = ? WHERE id = ? AND location = ?", (new_quantity, item_id, location)
-            )
-        conn.commit()
-        return True
 
 
 # ---------------------------------------------------------------------------
@@ -1004,37 +721,4 @@ def decide_login_request(request_id, approve: bool, decided_by):
             )
         conn.commit()
         return True
-
-
-# ---------------------------------------------------------------------------
-# Переоблік
-# ---------------------------------------------------------------------------
-def get_items_for_recount(location):
-    with closing(get_connection()) as conn:
-        cur = conn.execute(
-            "SELECT id, photo_path, name, color, price, quantity FROM items WHERE location = ? ORDER BY id",
-            (location,),
-        )
-        return cur.fetchall()
-
-
-def apply_recount(location, counted_quantities, counted_by):
-    """counted_quantities: список (item_id, актуальна_кількість).
-    Повертає список змін (item_id, назва, стара, нова) - лише де щось змінилось."""
-    changes = []
-    with closing(get_connection()) as conn:
-        for item_id, actual_qty in counted_quantities:
-            row = conn.execute(
-                "SELECT name, color, quantity FROM items WHERE id = ? AND location = ?", (item_id, location)
-            ).fetchone()
-            if row is None:
-                continue
-            name, color, old_qty = row
-            if old_qty != actual_qty:
-                conn.execute(
-                    "UPDATE items SET quantity = ? WHERE id = ? AND location = ?", (actual_qty, item_id, location)
-                )
-                changes.append({"item_id": item_id, "name": name, "color": color, "old": old_qty, "new": actual_qty})
-        conn.commit()
-    return changes
 
